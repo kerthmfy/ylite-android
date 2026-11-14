@@ -1,0 +1,27 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- The mark: a Y that reads as a road fork, with one calibration tick. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M34,34 L54,57 L74,34"
+        android:strokeColor="#FF5B3D"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="7" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,57 L54,77"
+        android:strokeColor="#FF5B3D"
+        android:strokeLineCap="round"
+        android:strokeWidth="7" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M40,87 L68,87"
+        android:strokeAlpha="0.5"
+        android:strokeColor="#FF5B3D"
+        android:strokeLineCap="round"
+        android:strokeWidth="3" />
+</vector>

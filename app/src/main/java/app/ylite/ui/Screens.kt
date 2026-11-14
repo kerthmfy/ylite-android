@@ -416,11 +416,11 @@ private fun MapPlaceholder() {
 @Composable
 private fun LinkPill(live: LiveState, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val colors = LocalYColors.current
-    val label = when {
-        live.connected -> "LIVE"
-        live.scanning -> "SCANNING"
-        else -> "OFFLINE"
-    }
+    val                 label = when {
+                    live.connected -> if (live.frameCount > 0) "LIVE · ${live.frameCount}" else "LIVE"
+                    live.scanning -> "SCANNING"
+                    else -> "OFFLINE"
+                }
     val dot = when {
         live.connected -> colors.good
         live.scanning -> colors.warn
@@ -462,7 +462,7 @@ private fun Metric(
                 color = if (available) colors.text else colors.muted,
                 maxLines = 1,
             )
-            if (unit != null) {
+            if (unit != null && available) {
                 Text(
                     text = unit,
                     modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
@@ -750,7 +750,7 @@ private fun RideRow(ride: Ride, onClick: () -> Unit) {
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                text = fmtDate(ride.startedAt),
+                text = fmtClock(ride.startedAt),
                 fontSize = 12.sp,
                 color = colors.muted,
             )

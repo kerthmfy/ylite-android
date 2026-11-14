@@ -24,6 +24,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import app.ylite.Graph
 import app.ylite.MainActivity
+import app.ylite.R
 import app.ylite.data.BleFrame
 import app.ylite.data.GpsPoint
 import app.ylite.data.Ride
@@ -276,7 +277,7 @@ class RideService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Y-Lite — recording")
             .setContentText(text)
             .setOngoing(true)
