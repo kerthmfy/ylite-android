@@ -209,7 +209,9 @@ private fun RideScreen(live: LiveState) {
     val longitude = live.lon
     val here: Pair<Double, Double>? =
         if (latitude != null && longitude != null) latitude to longitude else lastKnown
-    val kmh = live.speedMps?.let { (it * 3.6f).roundToInt() }
+    // The scooter's own speedo wins when the CCU is decoded; GPS is the fallback.
+    val kmh = live.telemetry.speedKph?.roundToInt()
+        ?: live.speedMps?.let { (it * 3.6f).roundToInt() }
     val elapsed = live.rideStartedAt?.let { (now - it).coerceAtLeast(0L) }
 
     Column(Modifier.fillMaxSize()) {
@@ -268,15 +270,78 @@ private fun RideScreen(live: LiveState) {
 
             Spacer(Modifier.height(20.dp))
 
+            Text(
+                "GPS %.2f km · ${live.frameCount} frames".format(live.distanceMeters / 1000.0),
+                style = MonoCode,
+                color = colors.muted,
+            )
+
+            Spacer(Modifier.height(18.dp))
+
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Metric("distance", "%.2f".format(live.distanceMeters / 1000.0), "km", Modifier.weight(1f))
+                Metric(
+                    "trip",
+                    fmtKm1(live.telemetry.tripKm),
+                    "km",
+                    Modifier.weight(1f),
+                    available = live.telemetry.tripKm != null,
+                )
                 VDivider()
-                Metric("frames", live.frameCount.toString(), null, Modifier.weight(1f))
+                Metric(
+                    "odo",
+                    fmtKm1(live.telemetry.odoKm),
+                    "km",
+                    Modifier.weight(1f),
+                    available = live.telemetry.odoKm != null,
+                )
                 VDivider()
-                Metric("elapsed", elapsed?.let { fmtDuration(it) } ?: "—", null, Modifier.weight(1f))
+                Metric(
+                    "fuel",
+                    fmtWhole(live.telemetry.fuelPercent),
+                    "%",
+                    Modifier.weight(1f),
+                    available = live.telemetry.fuelPercent != null,
+                )
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(14.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Metric(
+                    "temp",
+                    fmtWhole(live.telemetry.tempC),
+                    "°C",
+                    Modifier.weight(1f),
+                    available = live.telemetry.tempC != null,
+                )
+                VDivider()
+                Metric(
+                    "battery",
+                    fmtWhole(live.telemetry.batteryPercent),
+                    "%",
+                    Modifier.weight(1f),
+                    available = live.telemetry.batteryPercent != null,
+                )
+                VDivider()
+                Metric(
+                    "elapsed",
+                    elapsed?.let { fmtDuration(it) } ?: "—",
+                    null,
+                    Modifier.weight(1f),
+                    available = elapsed != null,
+                )
+            }
+
+            if (live.telemetry.isEmpty) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Scooter values stay blank until the CCU frames are decoded.",
+                    fontSize = 11.sp,
+                    color = colors.muted,
+                )
+            }
+
+            Spacer(Modifier.height(20.dp))
 
             RecordButton(
                 recording = live.recording,
@@ -383,6 +448,7 @@ private fun Metric(
     value: String,
     unit: String?,
     modifier: Modifier = Modifier,
+    available: Boolean = true,
 ) {
     val colors = LocalYColors.current
     Column(modifier) {
@@ -393,7 +459,7 @@ private fun Metric(
                 text = value,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 20.sp,
-                color = colors.text,
+                color = if (available) colors.text else colors.muted,
                 maxLines = 1,
             )
             if (unit != null) {
@@ -847,11 +913,20 @@ private fun DebugScreen(live: LiveState) {
             Text("bond: ${live.bond}", style = MonoCode, color = colors.muted)
 
             Spacer(Modifier.height(10.dp))
-            Text("LAST FRAME", style = MicroLabel, color = colors.muted)
-            MonoBlock(live.lastFrameHex.ifEmpty { "—" })
+            Text("FRAMES (NEWEST FIRST)", style = MicroLabel, color = colors.muted)
+            if (live.recentFrames.isEmpty()) {
+                MonoBlock(
+                    "No frames yet. Connect to the CCU: every notification lands here with its arrival time.",
+                )
+            } else {
+                MonoBlock(
+                    live.recentFrames.joinToString("\n") { "${fmtClock(it.time)}  ${it.hex}" },
+                )
+            }
 
-            if (live.decoded.isNotEmpty()) {
-                live.decoded.forEach { (key, value) ->
+            if (live.telemetry.extra.isNotEmpty()) {
+                Text("DECODED", style = MicroLabel, color = colors.muted)
+                live.telemetry.extra.forEach { (key, value) ->
                     Text("$key = $value", style = MonoValue, color = colors.text)
                 }
             } else {
@@ -973,6 +1048,10 @@ private fun fmtDuration(millis: Long): String {
     val seconds = totalSeconds % 60
     return "%d:%02d:%02d".format(hours, minutes, seconds)
 }
+
+private fun fmtKm1(value: Double?): String = value?.let { "%.1f".format(it) } ?: "—"
+
+private fun fmtWhole(value: Float?): String = value?.let { "%.0f".format(it) } ?: "—"
 
 private fun fmtSpeed(metresPerSecond: Float?): String =
     metresPerSecond?.let { "%.0f".format(it * 3.6f) } ?: "—"

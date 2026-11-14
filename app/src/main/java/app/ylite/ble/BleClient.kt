@@ -377,13 +377,16 @@ class BleClient(private val context: Context) {
                     characteristic.uuid,
                     value,
                 )
-            }.getOrDefault(emptyMap())
+            }.getOrDefault(app.ylite.data.Telemetry())
+
+            val line = app.ylite.data.FrameLine(System.currentTimeMillis(), value.hex())
 
             Graph.setLive {
                 it.copy(
                     frameCount = it.frameCount + 1,
                     lastFrameHex = value.hex(),
-                    decoded = decoded,
+                    telemetry = it.telemetry.merge(decoded),
+                    recentFrames = (listOf(line) + it.recentFrames).take(60),
                 )
             }
         }

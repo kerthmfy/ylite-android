@@ -1,19 +1,35 @@
 package app.ylite.ble
 
+import app.ylite.data.Telemetry
 import java.util.UUID
 
 /**
- * Turns raw characteristic bytes into readable values.
+ * Turns raw characteristic bytes into scooter values.
  *
- * It is deliberately empty: nothing is known about the CCU yet. Phase 0 (capture)
- * comes first, then this file is written against real bytes. Until then the Debug
- * tab shows the raw hex so you can decode by hand and compare.
+ * It returns an empty [Telemetry] today, and that is deliberate: nothing is known
+ * about the CCU's frame layout yet. The plan (Phase 0) is to capture frames first,
+ * then fill in [decode] against real bytes — every other part of the app already
+ * reacts to whatever this returns, so no UI code has to change.
+ *
+ * The CCU is a Nordic UART device:
+ *   6e400002  write       phone -> CCU
+ *   6e400003  notify      CCU -> phone   <- frames arrive here
+ *
+ * See lessons/02-decoding-the-frames.md.
  */
 object ProtocolDecoder {
 
-    fun decode(service: UUID, characteristic: UUID, data: ByteArray): Map<String, String> {
-        if (data.isEmpty()) return emptyMap()
-        return emptyMap()
+    fun decode(service: UUID, characteristic: UUID, data: ByteArray): Telemetry {
+        if (data.isEmpty()) return Telemetry()
+
+        // Until the layout is known we keep the shape of the frame visible, so the
+        // Debug tab still tells you whether anything is arriving at all.
+        return Telemetry(
+            extra = mapOf(
+                "len" to data.size.toString(),
+                "hex" to data.hexCompact(),
+            ),
+        )
     }
 }
 

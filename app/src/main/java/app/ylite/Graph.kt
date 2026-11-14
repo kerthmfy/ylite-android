@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import app.ylite.ble.BleClient
 import app.ylite.data.AppDb
+import app.ylite.data.FrameLine
+import app.ylite.data.Telemetry
 import app.ylite.data.YDao
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +26,9 @@ data class LiveState(
     val gattDump: String = "",
     val frameCount: Int = 0,
     val lastFrameHex: String = "",
-    val decoded: Map<String, String> = emptyMap(),
+    /** Newest first, capped so a chatty CCU cannot grow this without bound. */
+    val recentFrames: List<FrameLine> = emptyList(),
+    val telemetry: Telemetry = Telemetry(),
     val rideId: Long? = null,
     val rideStartedAt: Long? = null,
     val recording: Boolean = false,
