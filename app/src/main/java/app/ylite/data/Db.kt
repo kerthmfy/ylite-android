@@ -10,6 +10,8 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 /** One ride: one press of Start, one press of Stop. */
@@ -21,6 +23,8 @@ data class Ride(
     val name: String? = null,
     val deviceName: String? = null,
     val deviceAddress: String? = null,
+    /** The scooter model this ride was recorded on, e.g. "Yamaha Mio Gravis". */
+    val model: String? = null,
 )
 
 /** One GPS fix. `time` is the fix time, not the insert time. */
@@ -105,10 +109,22 @@ interface YDao {
 
 @Database(
     entities = [Ride::class, GpsPoint::class, BleFrame::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): YDao
+
+    companion object {
+        /**
+         * v2 adds rides.model. Written by hand rather than wiping the database, so
+         * the rides you already recorded survive the upgrade.
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE rides ADD COLUMN model TEXT")
+            }
+        }
+    }
 }

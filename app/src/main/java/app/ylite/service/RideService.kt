@@ -109,6 +109,7 @@ class RideService : Service() {
                     startedAt = startedAt,
                     deviceName = live.deviceName,
                     deviceAddress = live.deviceAddress,
+                    model = live.model,
                 ),
             )
             Graph.setLive {

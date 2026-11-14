@@ -51,6 +51,12 @@ data class ScanHit(
     val name: String?,
     val rssi: Int,
     val lastSeen: Long,
+    /**
+     * Raw advertisement payload (service UUIDs, manufacturer data) in hex.
+     * Captured as evidence: if the CCU ever advertises a model code, it shows up
+     * here rather than in the GATT table.
+     */
+    val advertised: String? = null,
 )
 
 data class BleFrameEvent(
@@ -128,6 +134,7 @@ class BleClient(private val context: Context) {
                 name = result.scanRecord?.deviceName,
                 rssi = result.rssi,
                 lastSeen = System.currentTimeMillis(),
+                advertised = describeAdvertisement(result),
             )
             _scanResults.update { list ->
                 (list.filterNot { it.address == hit.address } + hit).sortedByDescending { it.rssi }
@@ -139,6 +146,21 @@ class BleClient(private val context: Context) {
             Graph.setLive { it.copy(scanning = false, status = "Scan failed (code $errorCode)") }
         }
     }
+
+    /** Flattens the advertisement into something you can read in a screenshot. */
+    private fun describeAdvertisement(result: ScanResult): String? = runCatching {
+        val record = result.scanRecord ?: return@runCatching null
+        val parts = mutableListOf<String>()
+        record.serviceUuids?.forEach { parts += "svc:${shortUuid(it.uuid)}" }
+        record.manufacturerSpecificData?.let { data ->
+            for (index in 0 until data.size()) {
+                val hex = data.valueAt(index)
+                    .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+                parts += "mfr:%04x:%s".format(data.keyAt(index), hex)
+            }
+        }
+        parts.joinToString(" ").ifEmpty { null }
+    }.getOrNull()
 
     @SuppressLint("MissingPermission")
     fun startScan() {

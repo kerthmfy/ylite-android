@@ -5,6 +5,7 @@ import androidx.room.Room
 import app.ylite.ble.BleClient
 import app.ylite.data.AppDb
 import app.ylite.data.FrameLine
+import app.ylite.data.Settings
 import app.ylite.data.Telemetry
 import app.ylite.data.YDao
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +22,8 @@ data class LiveState(
     val scanning: Boolean = false,
     val connected: Boolean = false,
     val deviceName: String? = null,
+    /** Which scooter this is, from Settings. Null until the user picks one. */
+    val model: String? = null,
     val deviceAddress: String? = null,
     val bond: String = "unknown",
     val gattDump: String = "",
@@ -51,10 +54,14 @@ object Graph {
     val live: StateFlow<LiveState> = _live.asStateFlow()
 
     val db: AppDb by lazy {
-        Room.databaseBuilder(appContext, AppDb::class.java, "ylite.db").build()
+        Room.databaseBuilder(appContext, AppDb::class.java, "ylite.db")
+            .addMigrations(AppDb.MIGRATION_1_2)
+            .build()
     }
 
     val dao: YDao get() = db.dao()
+
+    val settings: Settings by lazy { Settings(appContext) }
 
     val ble: BleClient by lazy { BleClient(appContext) }
 

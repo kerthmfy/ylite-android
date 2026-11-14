@@ -74,6 +74,7 @@ import app.ylite.LiveState
 import app.ylite.ble.ScanHit
 import app.ylite.data.GpsPoint
 import app.ylite.data.Ride
+import app.ylite.data.Scooters
 import app.ylite.export.Exporters
 import app.ylite.service.RideService
 import kotlinx.coroutines.Dispatchers
@@ -375,15 +376,26 @@ private fun RideScreen(live: LiveState) {
                         .clip(CircleShape)
                         .background(if (live.connected) colors.good else colors.muted),
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (live.connected) live.deviceAddress.orEmpty() else "Scooter link",
-                    style = MonoValue,
-                    color = if (live.connected) colors.text else colors.muted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = live.model ?: "Scooter link",
+                        fontSize = 14.sp,
+                        color = if (live.model != null) colors.text else colors.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = if (live.connected) {
+                            "connected · ${live.deviceAddress.orEmpty()}"
+                        } else {
+                            "not connected"
+                        },
+                        style = MicroLabel,
+                        color = colors.muted,
+                        maxLines = 1,
+                    )
+                }
                 Text("MANAGE", style = MicroLabel, color = colors.accent)
             }
 
@@ -519,6 +531,7 @@ private fun DeviceSheet(live: LiveState, hits: List<ScanHit>, onDismiss: () -> U
     val colors = LocalYColors.current
     val context = LocalContext.current
     var address by rememberSaveable { mutableStateOf("") }
+    var picking by rememberSaveable { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -529,21 +542,66 @@ private fun DeviceSheet(live: LiveState, hits: List<ScanHit>, onDismiss: () -> U
         Column(
             Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("SCOOTER LINK", style = MicroLabel, color = colors.muted)
+            Text("SCOOTER", style = MicroLabel, color = colors.muted)
             Text(
-                text = if (live.connected) "Connected" else "Not connected",
+                text = live.model ?: "Model not set",
                 fontSize = 26.sp,
                 letterSpacing = (-0.6).sp,
-                color = colors.text,
+                color = if (live.model != null) colors.text else colors.muted,
+            )
+            Text(
+                text = if (live.connected) {
+                    "Connected — ${live.deviceAddress.orEmpty()}"
+                } else {
+                    "Not connected"
+                },
+                fontSize = 13.sp,
+                color = colors.muted,
             )
             Text(live.status, fontSize = 13.sp, lineHeight = 19.sp, color = colors.muted)
             Text("bond: ${live.bond}", style = MonoCode, color = colors.muted)
 
             Spacer(Modifier.height(6.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(label = if (picking) "CLOSE LIST" else "CHANGE MODEL") {
+                    picking = !picking
+                }
+            }
+
+            if (picking) {
+                Column {
+                    Scooters.models.forEach { model ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    Graph.settings.scooterModel = model
+                                    Graph.setLive { it.copy(model = model) }
+                                    picking = false
+                                }
+                                .padding(vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = model,
+                                fontSize = 14.sp,
+                                color = colors.text,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (model == live.model) {
+                                Text("SET", style = MicroLabel, color = colors.accent)
+                            }
+                        }
+                    }
+                }
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PillButton(
@@ -626,6 +684,7 @@ private fun DeviceRow(hit: ScanHit, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             Text(hit.address, style = MonoCode, color = colors.muted)
+            hit.advertised?.let { Text(it, style = MonoCode, color = colors.accent, maxLines = 2) }
         }
         Text("${hit.rssi} dBm", style = MicroLabel, color = colors.muted)
     }
@@ -750,9 +809,11 @@ private fun RideRow(ride: Ride, onClick: () -> Unit) {
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                text = fmtClock(ride.startedAt),
+                text = listOfNotNull(fmtClock(ride.startedAt), ride.model).joinToString(" · "),
                 fontSize = 12.sp,
                 color = colors.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Column(horizontalAlignment = Alignment.End) {
@@ -826,6 +887,10 @@ private fun RideDetailScreen(rideId: Long, onBack: () -> Unit) {
                 fontSize = 13.sp,
                 color = colors.muted,
             )
+            val rideModel = loadedRide?.model
+            if (rideModel != null) {
+                Text(rideModel, fontSize = 13.sp, color = colors.text)
+            }
 
             Spacer(Modifier.height(22.dp))
 
@@ -911,6 +976,7 @@ private fun DebugScreen(live: LiveState) {
             Text(live.status, fontSize = 14.sp, lineHeight = 20.sp, color = colors.text)
             live.deviceAddress?.let { Text(it, style = MonoValue, color = colors.muted) }
             Text("bond: ${live.bond}", style = MonoCode, color = colors.muted)
+            live.model?.let { Text("model: $it", style = MonoCode, color = colors.muted) }
 
             Spacer(Modifier.height(10.dp))
             Text("FRAMES (NEWEST FIRST)", style = MicroLabel, color = colors.muted)

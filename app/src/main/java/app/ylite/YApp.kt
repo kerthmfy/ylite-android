@@ -11,6 +11,7 @@ class YApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)
+        Graph.setLive { it.copy(model = Graph.settings.scooterModel) }
 
         // osmdroid identifies your app to the tile server with this user agent.
         // OSM's public tiles are meant for light personal use only.
