@@ -13,8 +13,8 @@ android {
         applicationId = "app.ylite"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.6"
+        versionCode = 7
+        versionName = "0.7"
     }
 
     buildTypes {
@@ -63,4 +63,7 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+
+    // The Fuelio parser is plain text in, records out, so it is tested on the JVM.
+    testImplementation("junit:junit:4.13.2")
 }

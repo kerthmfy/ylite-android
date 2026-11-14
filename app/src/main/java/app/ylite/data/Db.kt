@@ -1,5 +1,6 @@
 package app.ylite.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -68,6 +69,12 @@ data class Fillup(
     val odometerKm: Double,
     val litres: Double,
     val costTotal: Double? = null,
+    /**
+     * False for a partial fill. Consumption is only computed across full tanks,
+     * so the flag changes the arithmetic, not just a label.
+     */
+    @ColumnInfo(defaultValue = "1") val isFull: Boolean = true,
+    val note: String? = null,
 )
 
 /** Something was done to the scooter at a known odometer reading. */
@@ -147,7 +154,7 @@ interface YDao {
 
 @Database(
     entities = [Ride::class, GpsPoint::class, BleFrame::class, Fillup::class, ServiceEntry::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -183,6 +190,17 @@ abstract class AppDb : RoomDatabase() {
                         "`odometerKm` REAL NOT NULL, " +
                         "`time` INTEGER NOT NULL)",
                 )
+            }
+        }
+
+        /**
+         * v4 adds Fuelio's notion of a full tank, plus a free note. Existing rows
+         * are full fills, which is what they were assumed to be already.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE fillups ADD COLUMN isFull INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE fillups ADD COLUMN note TEXT")
             }
         }
     }

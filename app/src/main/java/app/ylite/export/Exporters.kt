@@ -129,7 +129,7 @@ class Exporters(private val context: Context) {
     }
 
     private fun fillupsCsvText(fillups: List<Fillup>): String = buildString {
-        appendLine("id,time_iso,odometer_km,litres,cost_total")
+        appendLine("id,time_iso,odometer_km,litres,cost_total,full,note")
         for (fillup in fillups) {
             appendLine(
                 listOf(
@@ -138,6 +138,8 @@ class Exporters(private val context: Context) {
                     "%.1f".format(Locale.US, fillup.odometerKm),
                     "%.3f".format(Locale.US, fillup.litres),
                     fillup.costTotal?.let { "%.2f".format(Locale.US, it) }.orEmpty(),
+                    if (fillup.isFull) "1" else "0",
+                    csv(fillup.note),
                 ).joinToString(","),
             )
         }

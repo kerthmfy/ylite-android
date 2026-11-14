@@ -1,30 +1,74 @@
 package app.ylite.data
 
-/** One fill-up: enough to compute consumption without any CCU data. */
-data class FuelStats(
-    val distanceKm: Double,
-    val litres: Double,
-    val cost: Double?,
-) {
-    /** km per litre, the figure riders actually quote. */
-    val kmPerL: Double? get() = if (litres > 0.0) distanceKm / litres else null
+/** One logged fill-up, with the economy of the tank it closed (null for partials). */
+data class FillupStat(
+    val fillup: Fillup,
+    val kmPerL: Double?,
+)
 
-    val costPerKm: Double? get() = cost?.takeIf { distanceKm > 0.0 }?.div(distanceKm)
-}
+data class FuelLog(
+    val entries: List<FillupStat>,
+    val kmPerL: Double?,
+    val costPerKm: Double?,
+    val distanceKm: Double,
+)
 
 /**
- * Treats every fill-up as a full tank: the odometer jump between two of them is
- * the distance burned on the fuel logged at the second. One fill-up is not
- * enough to say anything, so this returns null rather than a made-up number.
+ * Consumption the way Fuelio works it out, because it is the honest way:
+ *
+ * - a **partial** fill adds fuel but closes nothing, so its litres stay pending;
+ * - a **full** fill closes a tank: distance since the last full tank, divided by
+ *   every litre put in since then, including this one;
+ * - the tank you have open now is never reported, because you cannot know how
+ *   much of it you have burned yet.
+ *
+ * Treating each fill-up as a tank of its own — which is what this did before —
+ * quietly inflates consumption every time you top up early.
  */
-fun fuelStats(fillups: List<Fillup>): FuelStats? {
+fun fuelLog(fillups: List<Fillup>): FuelLog {
     val sorted = fillups.sortedBy { it.odometerKm }
-    if (sorted.size < 2) return null
+    val entries = mutableListOf<FillupStat>()
 
-    val distance = sorted.last().odometerKm - sorted.first().odometerKm
-    if (distance <= 0.0) return null
+    var lastFullKm: Double? = null
+    var pendingLitres = 0.0
+    var pendingCost = 0.0
+    var distance = 0.0
+    var litres = 0.0
+    var cost = 0.0
 
-    val litres = sorted.drop(1).sumOf { it.litres }
-    val cost = sorted.drop(1).mapNotNull { it.costTotal }.takeIf { it.isNotEmpty() }?.sum()
-    return FuelStats(distanceKm = distance, litres = litres, cost = cost)
+    for (fillup in sorted) {
+        pendingLitres += fillup.litres
+        pendingCost += fillup.costTotal ?: 0.0
+
+        if (!fillup.isFull) {
+            entries += FillupStat(fillup, kmPerL = null)
+            continue
+        }
+
+        val base = lastFullKm
+        if (base != null) {
+            val segment = fillup.odometerKm - base
+            if (segment > 0.0 && pendingLitres > 0.0) {
+                entries += FillupStat(fillup, segment / pendingLitres)
+                distance += segment
+                litres += pendingLitres
+                cost += pendingCost
+            } else {
+                entries += FillupStat(fillup, kmPerL = null)
+            }
+        } else {
+            entries += FillupStat(fillup, kmPerL = null)
+        }
+
+        pendingLitres = 0.0
+        pendingCost = 0.0
+        lastFullKm = fillup.odometerKm
+    }
+
+    return FuelLog(
+        entries = entries,
+        kmPerL = if (litres > 0.0) distance / litres else null,
+        costPerKm = if (cost > 0.0 && distance > 0.0) cost / distance else null,
+        distanceKm = distance,
+    )
 }

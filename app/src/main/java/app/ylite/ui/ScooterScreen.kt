@@ -44,12 +44,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.ylite.Graph
 import app.ylite.LiveState
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import app.ylite.data.Fillup
-import app.ylite.data.FuelStats
 import app.ylite.data.Maintenance
 import app.ylite.data.ServiceEntry
-import app.ylite.data.fuelStats
+import app.ylite.data.fuelLog
 import app.ylite.export.Exporters
+import app.ylite.fuelio.FuelioCsv
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -87,7 +89,46 @@ fun ScooterScreen(live: LiveState) {
     }
 
     val odometer = currentOdometerKm(live, fillups)
-    val stats = fuelStats(fillups)
+    val log = fuelLog(fillups)
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val parsed = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader()
+                        ?.use { reader -> reader.readText() }
+                        ?.let { FuelioCsv.parse(it) }
+                }.getOrNull()
+            }
+
+            if (parsed == null) {
+                Toast.makeText(context, "Could not read that file.", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            if (parsed.fills.isEmpty()) {
+                val why = parsed.conversion?.takeIf { it.startsWith("No ") } ?: "No fill-up rows found"
+                Toast.makeText(context, why, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+
+            // Importing twice should not double the history: odometer is the key.
+            val known = fillups.map { "%.1f".format(it.odometerKm) }.toSet()
+            val fresh = parsed.fills.filterNot { "%.1f".format(it.odometerKm) in known }
+            withContext(Dispatchers.IO) { fresh.forEach { Graph.dao.insertFillup(it) } }
+
+            val parts = mutableListOf("Imported ${fresh.size} fill-ups")
+            val duplicates = parsed.fills.size - fresh.size
+            if (duplicates > 0) parts += "$duplicates already here"
+            if (parsed.skipped > 0) parts += "${parsed.skipped} unreadable"
+            parsed.vehicle?.let { parts += it }
+            parsed.conversion?.let { parts += it }
+            Toast.makeText(context, parts.joinToString(" · "), Toast.LENGTH_LONG).show()
+        }
+    }
 
     Column(
         Modifier
@@ -124,14 +165,14 @@ fun ScooterScreen(live: LiveState) {
 
         Section("FUEL") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Metric("km / l", stats?.kmPerL?.let { "%.1f".format(it) } ?: "—", null, Modifier.weight(1f), stats?.kmPerL != null)
+                Metric("km / l", log.kmPerL?.let { "%.1f".format(it) } ?: "—", null, Modifier.weight(1f), log.kmPerL != null)
                 VDivider()
                 Metric(
                     "cost / km",
-                    stats?.costPerKm?.let { "%.2f".format(it) } ?: "—",
+                    log.costPerKm?.let { "%.2f".format(it) } ?: "—",
                     null,
                     Modifier.weight(1f),
-                    stats?.costPerKm != null,
+                    log.costPerKm != null,
                 )
                 VDivider()
                 Metric("fill-ups", fillups.size.toString(), null, Modifier.weight(1f))
@@ -140,11 +181,14 @@ fun ScooterScreen(live: LiveState) {
             Spacer(Modifier.height(12.dp))
 
             Text(
-                text = if (fillups.size < 2) {
-                    "Log two fill-ups and the app can compute real km/L from your odometer, no CCU required."
-                } else {
-                    stats?.distanceKm?.let { "%.0f km tracked since your first fill-up.".format(it) }
-                        ?: "Two fill-ups needed."
+                text = when {
+                    log.kmPerL != null ->
+                        "%.0f km between full tanks. Partial fills count towards the next tank, not on their own."
+                            .format(log.distanceKm)
+                    fillups.size < 2 ->
+                        "Log two fill-ups and the app can compute real km/L from your odometer, no CCU required."
+                    else ->
+                        "Mark a fill-up as a full tank to close a tank and get its km/L."
                 },
                 fontSize = 11.sp,
                 lineHeight = 17.sp,
@@ -160,7 +204,8 @@ fun ScooterScreen(live: LiveState) {
             if (fillups.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 fillups.takeLast(6).reversed().forEach { fillup ->
-                    FillupRow(fillup) {
+                    val economy = log.entries.firstOrNull { it.fillup.id == fillup.id }?.kmPerL
+                    FillupRow(fillup, economy) {
                         scope.launch { withContext(Dispatchers.IO) { Graph.dao.deleteFillup(fillup.id) } }
                     }
                 }
@@ -244,6 +289,21 @@ fun ScooterScreen(live: LiveState) {
 
         Section("DATA") {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(label = "IMPORT FUELIO CSV") {
+                    importLauncher.launch(arrayOf("*/*"))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "In Fuelio: Settings → Export → CSV, then pick that file here. Full and partial tanks, litres, prices and notes are read; miles and US gallons are converted. Rows already in this log are skipped.",
+                fontSize = 11.sp,
+                lineHeight = 17.sp,
+                color = colors.muted,
+            )
+
+            Spacer(Modifier.height(14.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PillButton(label = exportLabel ?: "EXPORT EVERYTHING", filled = true, enabled = exportLabel == null) {
                     exportLabel = "BUILDING…"
                     scope.launch {
@@ -307,7 +367,7 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun FillupRow(fillup: Fillup, onDelete: () -> Unit) {
+private fun FillupRow(fillup: Fillup, kmPerL: Double?, onDelete: () -> Unit) {
     val colors = LocalYColors.current
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp),
@@ -320,7 +380,17 @@ private fun FillupRow(fillup: Fillup, onDelete: () -> Unit) {
                 color = colors.text,
             )
             Spacer(Modifier.height(2.dp))
-            Text(fmtDay(fillup.time), style = MonoCode, color = colors.muted)
+            Text(
+                text = listOfNotNull(
+                    fmtDay(fillup.time),
+                    if (fillup.isFull) null else "partial",
+                    kmPerL?.let { "%.1f km/L".format(it) },
+                    fillup.note,
+                ).joinToString(" · "),
+                style = MonoCode,
+                color = colors.muted,
+                maxLines = 1,
+            )
         }
         fillup.costTotal?.let {
             Text("%.2f".format(it), style = MonoValue, color = colors.muted)
@@ -349,6 +419,7 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
     var odometer by rememberSaveable { mutableStateOf("") }
     var litres by rememberSaveable { mutableStateOf("") }
     var cost by rememberSaveable { mutableStateOf("") }
+    var fullTank by rememberSaveable { mutableStateOf(true) }
 
     val km = odometer.toNumberOrNull()
     val amount = litres.toNumberOrNull()
@@ -390,6 +461,36 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
             NumberField("LITRES", litres, "3.50") { litres = it }
             NumberField("COST (OPTIONAL)", cost, "200.00") { cost = it }
 
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { fullTank = !fullTank }
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("FULL TANK", style = MicroLabel, color = colors.muted)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (fullTank) {
+                            "Filled to the top — this closes the tank and gives its km/L."
+                        } else {
+                            "Partial fill — its litres count towards the next full tank."
+                        },
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = colors.muted,
+                    )
+                }
+                Text(
+                    text = if (fullTank) "YES" else "NO",
+                    style = MicroLabel,
+                    color = colors.accent,
+                    modifier = Modifier.padding(start = 12.dp),
+                )
+            }
+
             Spacer(Modifier.height(2.dp))
             PillButton(
                 label = "SAVE",
@@ -406,6 +507,7 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
                                     odometerKm = odometerKm,
                                     litres = amountLitres,
                                     costTotal = cost.toNumberOrNull(),
+                                    isFull = fullTank,
                                 ),
                             )
                         }

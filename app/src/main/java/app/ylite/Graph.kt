@@ -55,7 +55,7 @@ object Graph {
 
     val db: AppDb by lazy {
         Room.databaseBuilder(appContext, AppDb::class.java, "ylite.db")
-            .addMigrations(AppDb.MIGRATION_1_2, AppDb.MIGRATION_2_3)
+            .addMigrations(AppDb.MIGRATION_1_2, AppDb.MIGRATION_2_3, AppDb.MIGRATION_3_4)
             .build()
     }
 
