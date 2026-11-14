@@ -20,6 +20,7 @@ data class LiveState(
     val connected: Boolean = false,
     val deviceName: String? = null,
     val deviceAddress: String? = null,
+    val bond: String = "unknown",
     val gattDump: String = "",
     val frameCount: Int = 0,
     val lastFrameHex: String = "",

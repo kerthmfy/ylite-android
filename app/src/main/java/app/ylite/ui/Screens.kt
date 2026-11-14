@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -450,6 +451,7 @@ private fun RecordButton(recording: Boolean, onClick: () -> Unit) {
 @Composable
 private fun DeviceSheet(live: LiveState, hits: List<ScanHit>, onDismiss: () -> Unit) {
     val colors = LocalYColors.current
+    val context = LocalContext.current
     var address by rememberSaveable { mutableStateOf("") }
 
     ModalBottomSheet(
@@ -473,6 +475,7 @@ private fun DeviceSheet(live: LiveState, hits: List<ScanHit>, onDismiss: () -> U
                 color = colors.text,
             )
             Text(live.status, fontSize = 13.sp, lineHeight = 19.sp, color = colors.muted)
+            Text("bond: ${live.bond}", style = MonoCode, color = colors.muted)
 
             Spacer(Modifier.height(6.dp))
 
@@ -513,8 +516,20 @@ private fun DeviceSheet(live: LiveState, hits: List<ScanHit>, onDismiss: () -> U
                 }
             }
 
+            PillButton(label = "BLUETOOTH SETTINGS") {
+                val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { context.startActivity(intent) }
+            }
+
             Spacer(Modifier.height(12.dp))
 
+            Text(
+                "The CCU only offers its data over a paired link, so Android must bond with it before frames flow. If it asks for a PIN, try 000000. Forget the CCU in Bluetooth settings if a pairing attempt went wrong.",
+                fontSize = 11.sp,
+                lineHeight = 17.sp,
+                color = colors.muted,
+            )
             Text(
                 "Read-only: Y-Lite never writes to the scooter. The CCU only powers up while the ignition is on, so scan with the scooter switched on and parked.",
                 fontSize = 11.sp,
@@ -829,6 +844,7 @@ private fun DebugScreen(live: LiveState) {
             Text("LINK", style = MicroLabel, color = colors.muted)
             Text(live.status, fontSize = 14.sp, lineHeight = 20.sp, color = colors.text)
             live.deviceAddress?.let { Text(it, style = MonoValue, color = colors.muted) }
+            Text("bond: ${live.bond}", style = MonoCode, color = colors.muted)
 
             Spacer(Modifier.height(10.dp))
             Text("LAST FRAME", style = MicroLabel, color = colors.muted)

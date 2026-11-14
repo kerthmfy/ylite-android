@@ -12,11 +12,15 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import app.ylite.Graph
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -92,6 +96,9 @@ class BleClient(private val context: Context) {
 
     private var scanning = false
     private var reconnectJob: Job? = null
+    private var connectAttempts = 0
+    private var bondReceiver: BroadcastReceiver? = null
+    private var pendingBondDevice: BluetoothDevice? = null
 
     private val ops = Channel<GattOp>(Channel.UNLIMITED)
 
@@ -174,6 +181,7 @@ class BleClient(private val context: Context) {
             return
         }
         wanted = address to name
+        connectAttempts = 0
         stopScan()
         reconnectJob?.cancel()
         Graph.setLive {
@@ -189,6 +197,7 @@ class BleClient(private val context: Context) {
     fun disconnect() {
         wanted = null
         reconnectJob?.cancel()
+        unregisterBondReceiver()
         scope.launch {
             val g = gatt
             runCatching { g?.disconnect() }
@@ -242,6 +251,15 @@ class BleClient(private val context: Context) {
 
     private fun scheduleReconnect() {
         val target = wanted ?: return
+        connectAttempts++
+        if (connectAttempts > 6) {
+            wanted = null
+            reconnectJob?.cancel()
+            Graph.setLive {
+                it.copy(connected = false, status = "Gave up reconnecting. Open Manage and tap Connect.")
+            }
+            return
+        }
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             var backoff = 1_000L
@@ -269,6 +287,28 @@ class BleClient(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             Log.i(TAG, "onConnectionStateChange status=$status newState=$newState")
+
+            // 5 = insufficient authentication, 15 = insufficient encryption: the CCU wants
+            // a bonded link. Blindly reconnecting here is what produced the repeated
+            // pairing attempts and the "incorrect PIN" error. Handle it explicitly.
+            if (status == BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION ||
+                status == BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION
+            ) {
+                Graph.setLive { it.copy(connected = false, status = "The CCU needs a paired link") }
+                closeGatt(g)
+                if (g.device.bondState == BluetoothDevice.BOND_BONDED) {
+                    wanted = null
+                    Graph.setLive {
+                        it.copy(
+                            status = "Pairing key rejected. Forget the CCU in Bluetooth settings, then pair again.",
+                        )
+                    }
+                } else {
+                    requestBond(g.device)
+                }
+                return
+            }
+
             if (status != BluetoothGatt.GATT_SUCCESS && newState != BluetoothProfile.STATE_DISCONNECTED) {
                 Graph.setLive { it.copy(connected = false, status = "GATT error $status") }
                 closeGatt(g)
@@ -277,11 +317,13 @@ class BleClient(private val context: Context) {
             }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    connectAttempts = 0
                     Graph.setLive {
                         it.copy(
                             connected = true,
                             status = "Connected — discovering services…",
                             deviceAddress = g.device.address,
+                            bond = bondLabel(g.device.bondState),
                         )
                     }
                     enqueue(DiscoverOp(g))
@@ -357,32 +399,43 @@ class BleClient(private val context: Context) {
     private suspend fun configure(g: BluetoothGatt) {
         val dump = StringBuilder()
         var readable = 0
-        var subscribed = 0
+        var streams = 0
+        val streamMask = BluetoothGattCharacteristic.PROPERTY_NOTIFY or
+            BluetoothGattCharacteristic.PROPERTY_INDICATE
 
         for (service in g.services) {
             dump.appendLine("Service ${service.uuid}")
             for (c in service.characteristics) {
                 dump.appendLine("  char ${c.uuid}  [${properties(c.properties)}]")
                 for (d in c.descriptors) dump.appendLine("    desc ${d.uuid}")
+                if (c.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) readable++
+                if (c.properties and streamMask != 0) streams++
+            }
+        }
 
-                if (c.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) {
-                    enqueue(ReadOp(g, c))
-                    readable++
-                }
-                val streams = BluetoothGattCharacteristic.PROPERTY_NOTIFY or
-                    BluetoothGattCharacteristic.PROPERTY_INDICATE
-                if (c.properties and streams != 0) {
-                    enqueue(SubscribeOp(g, c))
-                    subscribed++
-                }
+        val bondState = g.device.bondState
+        Graph.setLive { it.copy(gattDump = dump.toString(), bond = bondLabel(bondState)) }
+
+        // Writing the notification descriptor on an unbonded link makes Android start
+        // pairing in the middle of the write, which is exactly the failure the user saw.
+        // Ask for the bond first; after bonding we reconnect and subscribe on a paired link.
+        if (bondState != BluetoothDevice.BOND_BONDED) {
+            Graph.setLive {
+                it.copy(status = "CCU found — $streams notification channel(s). Pairing needed.")
+            }
+            requestBond(g.device)
+            return
+        }
+
+        for (service in g.services) {
+            for (c in service.characteristics) {
+                if (c.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) enqueue(ReadOp(g, c))
+                if (c.properties and streamMask != 0) enqueue(SubscribeOp(g, c))
             }
         }
 
         Graph.setLive {
-            it.copy(
-                gattDump = dump.toString(),
-                status = "Connected — $readable readable, $subscribed subscribed",
-            )
+            it.copy(status = "Connected — $readable readable, $streams subscribed")
         }
     }
 
@@ -400,6 +453,85 @@ class BleClient(private val context: Context) {
         if (mask and BluetoothGattCharacteristic.PROPERTY_BROADCAST != 0) names += "broadcast"
         if (mask and BluetoothGattCharacteristic.PROPERTY_SIGNED_WRITE != 0) names += "signed-write"
         return names.joinToString(",")
+    }
+
+    // ------------------------------------------------------------------ pairing
+
+    private fun bondLabel(state: Int): String = when (state) {
+        BluetoothDevice.BOND_BONDED -> "bonded"
+        BluetoothDevice.BOND_BONDING -> "pairing"
+        BluetoothDevice.BOND_NONE -> "unbonded"
+        else -> "state $state"
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestBond(device: BluetoothDevice) {
+        pendingBondDevice = device
+        registerBondReceiver()
+        Graph.setLive { it.copy(bond = bondLabel(device.bondState)) }
+        if (device.bondState != BluetoothDevice.BOND_NONE) return
+
+        Graph.setLive {
+            it.copy(status = "Pairing with the CCU — approve the prompt (PIN is usually 000000)")
+        }
+        val started = runCatching { device.createBond() }.getOrDefault(false)
+        if (!started) {
+            Graph.setLive {
+                it.copy(status = "Could not start pairing. Pair the CCU in Android Bluetooth settings first.")
+            }
+        }
+    }
+
+    private fun registerBondReceiver() {
+        if (bondReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            @SuppressLint("MissingPermission")
+            override fun onReceive(receiverContext: Context, intent: Intent) {
+                val device = IntentCompat.getParcelableExtra(
+                    intent,
+                    BluetoothDevice.EXTRA_DEVICE,
+                    BluetoothDevice::class.java,
+                ) ?: return
+                if (pendingBondDevice?.address != device.address) return
+
+                val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+                Graph.setLive { it.copy(bond = bondLabel(state)) }
+                when (state) {
+                    BluetoothDevice.BOND_BONDED -> {
+                        Graph.setLive { it.copy(status = "Paired — connecting…") }
+                        unregisterBondReceiver()
+                        val target = wanted ?: return
+                        scope.launch { open(target.first) }
+                    }
+
+                    BluetoothDevice.BOND_NONE -> {
+                        Graph.setLive {
+                            it.copy(
+                                connected = false,
+                                status = "Pairing failed. Forget the CCU in Bluetooth settings, then try again (PIN 000000).",
+                            )
+                        }
+                        wanted = null
+                        reconnectJob?.cancel()
+                        unregisterBondReceiver()
+                    }
+                }
+            }
+        }
+        bondReceiver = receiver
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    private fun unregisterBondReceiver() {
+        val receiver = bondReceiver ?: return
+        runCatching { context.unregisterReceiver(receiver) }
+        bondReceiver = null
+        pendingBondDevice = null
     }
 
     // ------------------------------------------------------------- permissions
