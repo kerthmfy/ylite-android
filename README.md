@@ -1,0 +1,105 @@
+# Y-Lite
+
+A read-only Android companion for a Yamaha scooter's CCU, built as a replacement for
+the official Y-Connect app. It records rides, logs fuel, and keeps a scooter's history
+on your own phone — none of it leaves the device.
+
+Not affiliated with Yamaha. Nothing here claims to satisfy Yamaha's terms; it is a
+personal tool that talks to a device you own using the standard Bluetooth protocol
+the CCU already exposes.
+
+## What it does today
+
+**Rides.** Start/stop a ride from the Ride tab. GPS fixes are recorded once a second,
+distance is accumulated, and the map follows you. Every ride is kept in History with
+duration, distance, max speed and the track drawn on OpenStreetMap tiles.
+
+**Scooter link.** Scan for the CCU, bond with it, and every notification it sends is
+recorded. A live dashboard shows trip, odometer, fuel, temperature, battery and elapsed
+time — blank (`—`) until the decoder knows where the bytes live, never a fake zero.
+
+**Fuel.** Log fill-ups with a station, full/partial tank, and any two of litres,
+price per litre and total (the third is computed, the same way Fuelio does it).
+Consumption is calculated across full tanks only, so a top-up does not invent a tank.
+
+**Maintenance.** Oil, CVT belt and rollers, air filter, spark plug and brake fluid
+counters, all measured from your odometer with overdue warnings.
+
+**Where you parked.** The last fix of your last ride, with a button into your maps app.
+
+**Import and export.** Fuelio's backup CSV imports directly. Everything exports as one
+zip: GPX per ride, raw CCU frames per ride, and CSV logs for rides, fill-ups, services
+and stations.
+
+## Read-only, deliberately
+
+The app never writes a characteristic value to the scooter. The only GATT write it ever
+performs is enabling the notification descriptor (`2902`) on Nordic UART
+`6e400003`, which is how a client subscribes to data the CCU already sends.
+
+## Build
+
+Requirements: JDK 17 or newer, Android SDK platform 35. Gradle comes from the wrapper.
+
+```bash
+./gradlew :app:assembleDebug        # APK at app/build/outputs/apk/debug/
+./gradlew :app:testDebugUnitTest    # JVM tests for the parsers and fuel maths
+```
+
+Versions are pinned in `gradle/libs.versions.toml` and `app/build.gradle.kts`:
+AGP 8.7.3, Gradle 8.9, Kotlin 2.0.21, KSP 2.0.21-1.0.28, Compose BOM 2024.10.01,
+Room 2.6.1 (the last release that works with Kotlin 2.0.x under KSP1), osmdroid 6.1.20.
+
+## Install
+
+Grab `ylite-debug.apk` from the latest release, or:
+
+```bash
+adb install -r ylite-debug.apk
+```
+
+Releases are debug-signed, so they upgrade in place over each other but not over a
+release-signed build.
+
+## First run
+
+1. Grant location, Bluetooth and notification permissions.
+2. Scooter tab → **CHANGE MODEL** → pick your scooter.
+3. Scooter switched on and parked → **MANAGE** → **SCAN** → tap the `YSCCU_…` entry.
+   Android will bond with it; the PIN is usually `000000`. If a pairing attempt went
+   wrong, forget the device in Bluetooth settings first.
+4. Ride tab → **START RIDE**.
+
+The CCU only powers up with the ignition on, and only one client can hold the link, so
+keep the official app closed while Y-Lite is connected.
+
+## Where the data lives
+
+Room database `ylite.db` in the app's private storage, currently schema **v5** with
+hand-written migrations covering every version since v1, so upgrades never drop rides.
+
+Exports land in `Android/data/app.ylite/files/exports/` and are shared through the
+system sheet.
+
+## Known gaps
+
+- **The telemetry decoder is a stub.** It keeps the raw bytes and returns no values
+  until the CCU's payload layout is known from captured frames. Everything that does
+  not depend on it — GPS, fuel, maintenance — works today.
+- **No bulk offline map download.** OpenStreetMap's tile policy forbids it and osmdroid
+  enforces that, so the map relies on its normal cache of tiles you have already seen.
+- **No write support** to the CCU. That is a design decision, not a missing feature.
+- **No ride auto-start.** Start and stop are manual; a killed process leaves a ride
+  with no end time, which History shows as `NO END`.
+
+## Layout
+
+```
+app/src/main/java/app/ylite/
+  ble/        scan, connect, bond handling, GATT queue, frame decoding
+  data/       Room entities and DAOs, telemetry model, fuel maths, maintenance table
+  export/     GPX, CSV and the full backup zip
+  fuelio/     Fuelio backup CSV importer
+  service/    foreground ride recorder
+  ui/         Compose screens, theme, osmdroid wrapper
+```
