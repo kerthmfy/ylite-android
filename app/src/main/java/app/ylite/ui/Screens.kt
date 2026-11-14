@@ -121,6 +121,7 @@ fun YLiteApp() {
             when (tab) {
                 0 -> RideScreen(live = live)
                 1 -> HistoryScreen(onOpen = { detailId = it })
+                2 -> ScooterScreen(live = live)
                 else -> DebugScreen(live = live)
             }
         }
@@ -132,7 +133,7 @@ fun YLiteApp() {
 @Composable
 private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
     val colors = LocalYColors.current
-    val tabs = listOf("Ride", "History", "Debug")
+    val tabs = listOf("Ride", "History", "Scooter", "Debug")
 
     Column(Modifier.fillMaxWidth().background(colors.surface).navigationBarsPadding()) {
         HorizontalDivider(color = colors.line, thickness = 1.dp)
@@ -247,6 +248,7 @@ private fun RideScreen(live: LiveState) {
                     .statusBarsPadding()
                     .padding(14.dp),
             )
+
         }
 
         Column(Modifier.padding(horizontal = 20.dp)) {
@@ -455,7 +457,7 @@ private fun LinkPill(live: LiveState, onClick: () -> Unit, modifier: Modifier = 
 }
 
 @Composable
-private fun Metric(
+internal fun Metric(
     label: String,
     value: String,
     unit: String?,
@@ -487,7 +489,7 @@ private fun Metric(
 }
 
 @Composable
-private fun VDivider() {
+internal fun VDivider() {
     val colors = LocalYColors.current
     Box(
         Modifier
@@ -691,7 +693,7 @@ private fun DeviceRow(hit: ScanHit, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PillButton(
+internal fun PillButton(
     label: String,
     filled: Boolean = false,
     enabled: Boolean = true,
@@ -702,10 +704,11 @@ private fun PillButton(
         modifier = Modifier
             .height(44.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(if (filled) colors.accent else colors.surfaceRaised)
+            .background(if (filled && enabled) colors.accent else colors.surfaceRaised)
             .border(
                 width = 1.dp,
-                color = if (filled) Color.Transparent else colors.line,
+                // A disabled action must not look tappable: same fill, but flat and hairlined.
+                color = if (filled && enabled) Color.Transparent else colors.line,
                 shape = RoundedCornerShape(12.dp),
             )
             .clickable(enabled = enabled, onClick = onClick)
@@ -1043,7 +1046,7 @@ private fun MonoBlock(text: String) {
 // --------------------------------------------------------------------- pieces
 
 @Composable
-private fun ScreenHeader(title: String, trailing: String? = null) {
+internal fun ScreenHeader(title: String, trailing: String? = null) {
     val colors = LocalYColors.current
     Row(
         modifier = Modifier
@@ -1084,7 +1087,7 @@ private fun requiredPermissions(): Array<String> {
     return permissions.toTypedArray()
 }
 
-private fun share(context: Context, file: File, mime: String) {
+internal fun share(context: Context, file: File, mime: String) {
     runCatching {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
@@ -1098,16 +1101,16 @@ private fun share(context: Context, file: File, mime: String) {
     }
 }
 
-private fun fmtDate(epochMs: Long): String =
+internal fun fmtDate(epochMs: Long): String =
     SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(Date(epochMs))
 
-private fun fmtDay(epochMs: Long): String =
+internal fun fmtDay(epochMs: Long): String =
     SimpleDateFormat("EEE d MMM", Locale.getDefault()).format(Date(epochMs))
 
-private fun fmtClock(epochMs: Long?): String =
+internal fun fmtClock(epochMs: Long?): String =
     epochMs?.let { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it)) } ?: "—"
 
-private fun fmtDuration(millis: Long): String {
+internal fun fmtDuration(millis: Long): String {
     val totalSeconds = (millis / 1000).coerceAtLeast(0)
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60

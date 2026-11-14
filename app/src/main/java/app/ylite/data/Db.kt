@@ -56,6 +56,29 @@ data class BleFrame(
     val data: ByteArray,
 )
 
+/**
+ * One fill-up. The odometer reading is the whole point: two of these give real
+ * fuel consumption long before the CCU's fuel field is decoded, and they also
+ * anchor the maintenance counters.
+ */
+@Entity(tableName = "fillups")
+data class Fillup(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val time: Long,
+    val odometerKm: Double,
+    val litres: Double,
+    val costTotal: Double? = null,
+)
+
+/** Something was done to the scooter at a known odometer reading. */
+@Entity(tableName = "services")
+data class ServiceEntry(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val kind: String,
+    val odometerKm: Double,
+    val time: Long,
+)
+
 /** SQLite has no byte type, so raw frames are stored as hex text. */
 class Converters {
     @TypeConverter
@@ -105,11 +128,26 @@ interface YDao {
 
     @Query("SELECT * FROM gps_points ORDER BY time DESC LIMIT 1")
     suspend fun lastPoint(): GpsPoint?
+
+    @Insert
+    suspend fun insertFillup(fillup: Fillup): Long
+
+    @Query("DELETE FROM fillups WHERE id = :id")
+    suspend fun deleteFillup(id: Long)
+
+    @Query("SELECT * FROM fillups ORDER BY odometerKm ASC")
+    fun fillups(): Flow<List<Fillup>>
+
+    @Insert
+    suspend fun insertService(service: ServiceEntry): Long
+
+    @Query("SELECT * FROM services ORDER BY odometerKm ASC")
+    fun services(): Flow<List<ServiceEntry>>
 }
 
 @Database(
-    entities = [Ride::class, GpsPoint::class, BleFrame::class],
-    version = 2,
+    entities = [Ride::class, GpsPoint::class, BleFrame::class, Fillup::class, ServiceEntry::class],
+    version = 3,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -124,6 +162,27 @@ abstract class AppDb : RoomDatabase() {
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE rides ADD COLUMN model TEXT")
+            }
+        }
+
+        /** v3 adds the fill-up log and the service log. Both start empty. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `fillups` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`time` INTEGER NOT NULL, " +
+                        "`odometerKm` REAL NOT NULL, " +
+                        "`litres` REAL NOT NULL, " +
+                        "`costTotal` REAL)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `services` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`odometerKm` REAL NOT NULL, " +
+                        "`time` INTEGER NOT NULL)",
+                )
             }
         }
     }
