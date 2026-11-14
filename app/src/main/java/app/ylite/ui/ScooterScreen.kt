@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,9 +47,12 @@ import app.ylite.Graph
 import app.ylite.LiveState
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import app.ylite.data.FillAmounts
+import app.ylite.data.FillField
 import app.ylite.data.Fillup
 import app.ylite.data.Maintenance
 import app.ylite.data.ServiceEntry
+import app.ylite.data.Station
 import app.ylite.data.fuelLog
 import app.ylite.export.Exporters
 import app.ylite.fuelio.FuelioCsv
@@ -74,6 +78,10 @@ fun ScooterScreen(live: LiveState) {
 
     val fillups by remember { Graph.dao.fillups() }.collectAsStateWithLifecycle(initialValue = emptyList())
     val services by remember { Graph.dao.services() }.collectAsStateWithLifecycle(initialValue = emptyList())
+    val stations by remember { Graph.dao.stations() }.collectAsStateWithLifecycle(initialValue = emptyList())
+    val visits = remember(fillups) {
+        fillups.mapNotNull { it.stationId }.groupingBy { it }.eachCount()
+    }
 
     var parked by remember { mutableStateOf<ParkedFix?>(null) }
     var addOpen by remember { mutableStateOf(false) }
@@ -205,7 +213,8 @@ fun ScooterScreen(live: LiveState) {
                 Spacer(Modifier.height(10.dp))
                 fillups.takeLast(6).reversed().forEach { fillup ->
                     val economy = log.entries.firstOrNull { it.fillup.id == fillup.id }?.kmPerL
-                    FillupRow(fillup, economy) {
+                    val stationName = stations.firstOrNull { it.id == fillup.stationId }?.name
+                    FillupRow(fillup, economy, stationName) {
                         scope.launch { withContext(Dispatchers.IO) { Graph.dao.deleteFillup(fillup.id) } }
                     }
                 }
@@ -316,7 +325,14 @@ fun ScooterScreen(live: LiveState) {
                                 rides.associate { it.id to Graph.dao.frames(it.id) }
                             }
                             withContext(Dispatchers.IO) {
-                                exporters.everything(rides, points, frames, fillups, services)
+                                exporters.everything(
+                                    rides = rides,
+                                    points = points,
+                                    frames = frames,
+                                    fillups = fillups,
+                                    services = services,
+                                    stationNames = stations.associate { it.id to it.name },
+                                )
                             }
                         }
                         exportLabel = null
@@ -338,7 +354,12 @@ fun ScooterScreen(live: LiveState) {
     }
 
     if (addOpen) {
-        FillupSheet(lastOdometer = odometer, onDismiss = { addOpen = false })
+        FillupSheet(
+            lastOdometer = odometer,
+            stations = stations,
+            visits = visits,
+            onDismiss = { addOpen = false },
+        )
     }
 }
 
@@ -367,7 +388,7 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun FillupRow(fillup: Fillup, kmPerL: Double?, onDelete: () -> Unit) {
+private fun FillupRow(fillup: Fillup, kmPerL: Double?, stationName: String?, onDelete: () -> Unit) {
     val colors = LocalYColors.current
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp),
@@ -383,6 +404,7 @@ private fun FillupRow(fillup: Fillup, kmPerL: Double?, onDelete: () -> Unit) {
             Text(
                 text = listOfNotNull(
                     fmtDay(fillup.time),
+                    stationName,
                     if (fillup.isFull) null else "partial",
                     kmPerL?.let { "%.1f km/L".format(it) },
                     fillup.note,
@@ -412,18 +434,25 @@ private fun FillupRow(fillup: Fillup, kmPerL: Double?, onDelete: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
+private fun FillupSheet(
+    lastOdometer: Double?,
+    stations: List<Station>,
+    visits: Map<Long, Int>,
+    onDismiss: () -> Unit,
+) {
     val colors = LocalYColors.current
     val scope = rememberCoroutineScope()
     // A hint, never a value: a prefilled field swallows the first digit you type.
     var odometer by rememberSaveable { mutableStateOf("") }
-    var litres by rememberSaveable { mutableStateOf("") }
-    var cost by rememberSaveable { mutableStateOf("") }
+    var amounts by rememberSaveable(stateSaver = fillAmountsSaver) { mutableStateOf(FillAmounts()) }
     var fullTank by rememberSaveable { mutableStateOf(true) }
+    var stationId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var pickingStation by rememberSaveable { mutableStateOf(false) }
+    var newStation by rememberSaveable { mutableStateOf("") }
 
     val km = odometer.toNumberOrNull()
-    val amount = litres.toNumberOrNull()
-    val valid = km != null && amount != null && amount > 0
+    val amount = amounts.litresValue
+    val valid = km != null && amount != null && amount > 0.0
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -441,12 +470,16 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
         },
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp),
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("ADD FILL-UP", style = MicroLabel, color = colors.muted)
             Text(
-                "Odometer and litres are enough. Copy the odometer from the dash when you fill up.",
+                text = "Copy the odometer from the dash, then type whatever the receipt shows: any two of litres, price and total fill in the third.",
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
                 color = colors.muted,
@@ -458,8 +491,36 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
                 placeholder = lastOdometer?.let { "last %.1f".format(it) } ?: "12345.0",
                 onValueChange = { odometer = it },
             )
-            NumberField("LITRES", litres, "3.50") { litres = it }
-            NumberField("COST (OPTIONAL)", cost, "200.00") { cost = it }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                NumberField(
+                    label = "LITRES",
+                    value = amounts.litres,
+                    placeholder = "2.326",
+                    modifier = Modifier.weight(1f),
+                ) { amounts = amounts.with(FillField.LITRES, it) }
+                NumberField(
+                    label = "PRICE / L",
+                    value = amounts.price,
+                    placeholder = "86",
+                    modifier = Modifier.weight(1f),
+                ) { amounts = amounts.with(FillField.PRICE, it) }
+            }
+            NumberField(
+                label = "TOTAL COST",
+                value = amounts.total,
+                placeholder = "200",
+            ) { amounts = amounts.with(FillField.TOTAL, it) }
+
+            val litresText = amounts.litresValue?.let { "%.3f".format(it) }
+            val priceText = amounts.priceValue?.let { "%.2f".format(it) }
+            val totalText = amounts.totalValue?.let { "%.2f".format(it) }
+            if (litresText != null && priceText != null && totalText != null) {
+                Text(
+                    text = "$litresText L × $priceText = $totalText",
+                    style = MonoCode,
+                    color = colors.muted,
+                )
+            }
 
             Row(
                 modifier = Modifier
@@ -492,6 +553,126 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
             }
 
             Spacer(Modifier.height(2.dp))
+
+            Text("GAS STATION", style = MicroLabel, color = colors.muted)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val selected = stations.firstOrNull { it.id == stationId }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = selected?.name ?: "Not set",
+                        fontSize = 14.sp,
+                        color = if (selected != null) colors.text else colors.muted,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = when {
+                            selected == null -> "Pick one you have used before, or add it"
+                            selected.favorite -> "favourite · ${visits[selected.id] ?: 0} visits"
+                            else -> "${visits[selected.id] ?: 0} visits"
+                        },
+                        style = MonoCode,
+                        color = colors.muted,
+                    )
+                }
+                Text(
+                    text = if (pickingStation) "CLOSE" else "SELECT",
+                    style = MicroLabel,
+                    color = colors.accent,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { pickingStation = !pickingStation }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+            }
+
+            if (pickingStation) {
+                stations
+                    .sortedWith(
+                        compareByDescending<Station> { it.favorite }
+                            .thenByDescending { visits[it.id] ?: 0 }
+                            .thenBy { it.name },
+                    )
+                    .forEach { station ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    stationId = station.id
+                                    pickingStation = false
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = if (station.favorite) "★" else "·",
+                                fontSize = 14.sp,
+                                color = if (station.favorite) colors.accent else colors.muted,
+                                modifier = Modifier.width(18.dp),
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = station.name,
+                                    fontSize = 14.sp,
+                                    color = colors.text,
+                                    maxLines = 1,
+                                )
+                                val count = visits[station.id] ?: 0
+                                if (count > 0) {
+                                    Text("$count visits", style = MonoCode, color = colors.muted)
+                                }
+                            }
+                            Text(
+                                text = "★",
+                                fontSize = 16.sp,
+                                color = if (station.favorite) colors.accent else colors.muted,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) {
+                                                Graph.dao.setStationFavorite(station.id, !station.favorite)
+                                            }
+                                        }
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+
+                if (stations.isEmpty()) {
+                    Text(
+                        "No stations yet. Add the one you fill at most.",
+                        fontSize = 11.sp,
+                        color = colors.muted,
+                    )
+                }
+
+                Spacer(Modifier.height(6.dp))
+                NumberField(
+                    label = "ADD A STATION",
+                    value = newStation,
+                    placeholder = "Shell Sumulong",
+                ) { newStation = it }
+                PillButton(
+                    label = "ADD STATION",
+                    enabled = newStation.isNotBlank(),
+                    onClick = {
+                        val name = newStation.trim()
+                        if (name.isEmpty()) return@PillButton
+                        scope.launch {
+                            val id = withContext(Dispatchers.IO) {
+                                Graph.dao.insertStation(Station(name = name))
+                            }
+                            stationId = id
+                            newStation = ""
+                            pickingStation = false
+                        }
+                    },
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
             PillButton(
                 label = "SAVE",
                 filled = true,
@@ -506,8 +687,10 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
                                     time = System.currentTimeMillis(),
                                     odometerKm = odometerKm,
                                     litres = amountLitres,
-                                    costTotal = cost.toNumberOrNull(),
+                                    costTotal = amounts.totalValue
+                                        ?: amounts.priceValue?.let { price -> amountLitres * price },
                                     isFull = fullTank,
+                                    stationId = stationId,
                                 ),
                             )
                         }
@@ -520,9 +703,15 @@ private fun FillupSheet(lastOdometer: Double?, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun NumberField(label: String, value: String, placeholder: String, onValueChange: (String) -> Unit) {
+private fun NumberField(
+    label: String,
+    value: String,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    onValueChange: (String) -> Unit,
+) {
     val colors = LocalYColors.current
-    Column {
+    Column(modifier) {
         Text(label, style = MicroLabel, color = colors.muted)
         Spacer(Modifier.height(6.dp))
         Box(
@@ -549,6 +738,12 @@ private fun NumberField(label: String, value: String, placeholder: String, onVal
         }
     }
 }
+
+/** Keeps a half-typed receipt alive across a rotation. */
+private val fillAmountsSaver = listSaver<FillAmounts, String>(
+    save = { amounts -> listOf(amounts.litres, amounts.price, amounts.total) },
+    restore = { saved -> FillAmounts(litres = saved[0], price = saved[1], total = saved[2]) },
+)
 
 /** Accepts both 3.5 and 3,5 because both keyboards happen. */
 private fun String.toNumberOrNull(): Double? =

@@ -38,6 +38,7 @@ class Exporters(private val context: Context) {
         frames: Map<Long, List<BleFrame>>,
         fillups: List<Fillup>,
         services: List<ServiceEntry>,
+        stationNames: Map<Long, String> = emptyMap(),
     ): File {
         val file = File(directory(), "ylite-backup-${fileStamp(System.currentTimeMillis())}.zip")
         ZipOutputStream(file.outputStream().buffered()).use { zip ->
@@ -56,7 +57,8 @@ class Exporters(private val context: Context) {
                 }
             }
             entry("rides.csv", ridesCsvText(rides))
-            entry("fillups.csv", fillupsCsvText(fillups))
+            entry("fillups.csv", fillupsCsvText(fillups, stationNames))
+            entry("stations.csv", stationsCsvText(stationNames))
             entry("services.csv", servicesCsvText(services))
             entry(
                 "README.txt",
@@ -128,8 +130,15 @@ class Exporters(private val context: Context) {
         }
     }
 
-    private fun fillupsCsvText(fillups: List<Fillup>): String = buildString {
-        appendLine("id,time_iso,odometer_km,litres,cost_total,full,note")
+    private fun stationsCsvText(stationNames: Map<Long, String>): String = buildString {
+        appendLine("id,name")
+        for ((id, name) in stationNames.toSortedMap()) {
+            appendLine(listOf(id.toString(), csv(name)).joinToString(","))
+        }
+    }
+
+    private fun fillupsCsvText(fillups: List<Fillup>, stationNames: Map<Long, String>): String = buildString {
+        appendLine("id,time_iso,odometer_km,litres,cost_total,full,station,note")
         for (fillup in fillups) {
             appendLine(
                 listOf(
@@ -139,6 +148,7 @@ class Exporters(private val context: Context) {
                     "%.3f".format(Locale.US, fillup.litres),
                     fillup.costTotal?.let { "%.2f".format(Locale.US, it) }.orEmpty(),
                     if (fillup.isFull) "1" else "0",
+                    csv(fillup.stationId?.let { stationNames[it] }),
                     csv(fillup.note),
                 ).joinToString(","),
             )

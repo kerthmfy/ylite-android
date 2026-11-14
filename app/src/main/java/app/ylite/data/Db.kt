@@ -75,6 +75,21 @@ data class Fillup(
      */
     @ColumnInfo(defaultValue = "1") val isFull: Boolean = true,
     val note: String? = null,
+    /** Null when the fill-up was logged without picking a station. */
+    val stationId: Long? = null,
+)
+
+/**
+ * A filling station you have used. Kept separately from the fill-ups so it can be
+ * renamed once and starred, and so "how often do I fill here" is a real number.
+ */
+@Entity(tableName = "stations")
+data class Station(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    @ColumnInfo(defaultValue = "0") val favorite: Boolean = false,
+    val lat: Double? = null,
+    val lon: Double? = null,
 )
 
 /** Something was done to the scooter at a known odometer reading. */
@@ -150,11 +165,27 @@ interface YDao {
 
     @Query("SELECT * FROM services ORDER BY odometerKm ASC")
     fun services(): Flow<List<ServiceEntry>>
+
+    @Insert
+    suspend fun insertStation(station: Station): Long
+
+    @Query("UPDATE stations SET favorite = :favorite WHERE id = :id")
+    suspend fun setStationFavorite(id: Long, favorite: Boolean)
+
+    @Query("SELECT * FROM stations ORDER BY favorite DESC, name ASC")
+    fun stations(): Flow<List<Station>>
 }
 
 @Database(
-    entities = [Ride::class, GpsPoint::class, BleFrame::class, Fillup::class, ServiceEntry::class],
-    version = 4,
+    entities = [
+        Ride::class,
+        GpsPoint::class,
+        BleFrame::class,
+        Fillup::class,
+        ServiceEntry::class,
+        Station::class,
+    ],
+    version = 5,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -201,6 +232,21 @@ abstract class AppDb : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE fillups ADD COLUMN isFull INTEGER NOT NULL DEFAULT 1")
                 db.execSQL("ALTER TABLE fillups ADD COLUMN note TEXT")
+            }
+        }
+
+        /** v5 adds the stations list and links fill-ups to it. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `stations` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`favorite` INTEGER NOT NULL DEFAULT 0, " +
+                        "`lat` REAL, " +
+                        "`lon` REAL)",
+                )
+                db.execSQL("ALTER TABLE fillups ADD COLUMN stationId INTEGER")
             }
         }
     }
