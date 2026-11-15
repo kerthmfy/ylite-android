@@ -18,6 +18,8 @@ time — blank (`—`) until the decoder knows where the bytes live, never a fak
 Debug → **CAPTURE FRAMES** stores notifications without starting a ride, and
 **EXPORT CAPTURE** writes them to a CSV, which is how a parked capture is collected.
 
+**Appearance.** System, light or dark, chosen in Scooter → Settings.
+
 The CCU is remembered after the first connection, so Y-Lite reconnects by itself when
 the scooter is switched on — including after a relaunch. It retries indefinitely,
 backing off to one attempt every 30 s, because "no answer" is simply a parked scooter
@@ -28,16 +30,26 @@ timestamps every attempt, drop and status code in plain words.
 price per litre and total (the third is computed, the same way Fuelio does it).
 Consumption is calculated across full tanks only, so a top-up does not invent a tank.
 
+The odometer can come from the dash, from the **trip meter** (added to the last reading
+for you), or from neither: Scooter → Settings → **Odometer optional** puts a NO READING
+switch on the form, so a receipt with litres and money is enough. Rows without a
+reading stay out of the km/L maths instead of quietly skewing it.
+
 **Maintenance.** Oil, CVT belt and rollers, air filter, spark plug and brake fluid to
 start with — but the list is yours: add a job, change how many kilometres it comes
 round, rename it, delete it. All of it is measured from your odometer, with overdue
-warnings and a DONE button that logs the service at the current reading.
+warnings and a DONE button that logs the service at the current reading. Tap a job to
+see its whole history — every service with its date and odometer — and to remove a
+wrongly logged one.
 
 **Where you parked.** The last fix of your last ride, with a button into your maps app.
 
 **Import and export.** Fuelio's backup CSV imports directly, and the station in its
 "City" column becomes a station here: names you have not used before are created and
 starred as favourites, so past stations and their visit counts appear without retyping.
+Trailing separators are cleaned off (`Petron -` becomes `Petron`), and any station can be
+renamed from the picker — renaming to a name that already exists merges the two and adds
+their visits together.
 Everything exports as one zip: GPX per ride, raw CCU frames per ride, and CSV logs for
 rides, fill-ups, services and stations.
 
@@ -85,7 +97,7 @@ keep the official app closed while Y-Lite is connected.
 
 ## Data
 
-The database `ylite.db` in the app's private storage, currently schema **v5** with
+The database `ylite.db` in the app's private storage, currently schema **v7** with
 hand-written migrations covering every version since v1, so upgrades never drop rides
 or fill-ups.
 

@@ -150,9 +150,14 @@ object FuelioCsv {
             val costTotal = pricePerUnit?.let { it * fuel }
 
             // A bare "-" is what people type when a field is optional and they have
-            // nothing to say; it should not become a station called "-".
+            // nothing to say; it should not become a station called "-". Trailing
+            // separators go too, so "Petron -" becomes "Petron" instead of a station
+            // with a dash stuck on the end.
             fun clean(raw: String?): String? =
-                raw?.trim()?.takeIf { it.isNotEmpty() && it != "-" && it != "—" }
+                raw?.trim()
+                    ?.trimEnd('-', '—', '·', ' ')
+                    ?.replace(Regex("\\s{2,}"), " ")
+                    ?.takeIf { it.isNotEmpty() && it != "-" && it != "—" }
 
             fills += ImportedFill(
                 time = time,

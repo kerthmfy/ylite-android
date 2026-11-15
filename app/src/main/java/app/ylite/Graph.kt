@@ -27,6 +27,10 @@ data class LiveState(
     val deviceName: String? = null,
     /** Which scooter this is, from Settings. Null until the user picks one. */
     val model: String? = null,
+    /** "system", "light" or "dark" — the user's choice, not the phone's. */
+    val themeMode: String = "system",
+    /** When true a fill-up can be logged without an odometer reading. */
+    val odometerOptional: Boolean = false,
     val deviceAddress: String? = null,
     val bond: String = "unknown",
     val gattDump: String = "",
@@ -71,6 +75,7 @@ object Graph {
                 AppDb.MIGRATION_3_4,
                 AppDb.MIGRATION_4_5,
                 AppDb.MIGRATION_5_6,
+                AppDb.MIGRATION_6_7,
             )
             // A brand new database never runs a migration, so it seeds here instead.
             .addCallback(

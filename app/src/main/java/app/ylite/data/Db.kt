@@ -78,6 +78,11 @@ data class Fillup(
     val note: String? = null,
     /** Null when the fill-up was logged without picking a station. */
     val stationId: Long? = null,
+    /**
+     * False when the receipt was logged without a reading. [odometerKm] still holds the
+     * last known value so ordering stays sane, but the fuel maths ignores this row.
+     */
+    @ColumnInfo(defaultValue = "1") val odometerKnown: Boolean = true,
 )
 
 /**
@@ -182,6 +187,9 @@ interface YDao {
     @Query("UPDATE services SET kind = :to WHERE kind = :from")
     suspend fun renameServiceKind(from: String, to: String)
 
+    @Query("DELETE FROM services WHERE id = :id")
+    suspend fun deleteService(id: Long)
+
     @Insert
     suspend fun insertStation(station: Station): Long
 
@@ -190,6 +198,16 @@ interface YDao {
 
     @Query("SELECT * FROM stations ORDER BY favorite DESC, name ASC")
     fun stations(): Flow<List<Station>>
+
+    @Update
+    suspend fun updateStation(station: Station)
+
+    @Query("DELETE FROM stations WHERE id = :id")
+    suspend fun deleteStation(id: Long)
+
+    /** Merging: every fill-up of one station moves to the other before the first goes. */
+    @Query("UPDATE fillups SET stationId = :to WHERE stationId = :from")
+    suspend fun reassignFillups(from: Long, to: Long)
 
     @Insert
     suspend fun insertInterval(interval: Interval): Long
@@ -214,7 +232,7 @@ interface YDao {
         Station::class,
         Interval::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -276,6 +294,15 @@ abstract class AppDb : RoomDatabase() {
                         "`lon` REAL)",
                 )
                 db.execSQL("ALTER TABLE fillups ADD COLUMN stationId INTEGER")
+            }
+        }
+
+        /** v7 adds the "this row has no odometer" flag, defaulting to known. */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE fillups ADD COLUMN odometerKnown INTEGER NOT NULL DEFAULT 1",
+                )
             }
         }
 

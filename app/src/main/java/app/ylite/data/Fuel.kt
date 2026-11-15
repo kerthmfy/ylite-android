@@ -37,6 +37,13 @@ fun fuelLog(fillups: List<Fillup>): FuelLog {
     var cost = 0.0
 
     for (fillup in sorted) {
+        // Logged without a reading: the litres are real but the distance they covered is
+        // unknown, so they cannot help any tank's average. They stay out of the maths.
+        if (!fillup.odometerKnown) {
+            entries += FillupStat(fillup, kmPerL = null)
+            continue
+        }
+
         pendingLitres += fillup.litres
         pendingCost += fillup.costTotal ?: 0.0
 
