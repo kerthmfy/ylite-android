@@ -38,7 +38,25 @@ class Settings(context: Context) {
             prefs.edit().putString(KEY_MODEL, value).apply()
         }
 
+    /**
+     * The CCU that was last connected, so the app can go back to it on its own when
+     * the scooter is switched on. Remembered even while disconnected.
+     */
+    var ccuAddress: String?
+        get() = prefs.getString(KEY_CCU_ADDRESS, null)
+        set(value) {
+            prefs.edit().putString(KEY_CCU_ADDRESS, value).apply()
+        }
+
+    var ccuName: String?
+        get() = prefs.getString(KEY_CCU_NAME, null)
+        set(value) {
+            prefs.edit().putString(KEY_CCU_NAME, value).apply()
+        }
+
     private companion object {
         const val KEY_MODEL = "scooter_model"
+        const val KEY_CCU_ADDRESS = "ccu_address"
+        const val KEY_CCU_NAME = "ccu_name"
     }
 }
