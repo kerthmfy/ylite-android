@@ -13,6 +13,10 @@ class YApp : Application() {
         Graph.init(this)
         Graph.setLive { it.copy(model = Graph.settings.scooterModel) }
 
+        // A remembered CCU is reconnected on its own: with the ignition off there is
+        // nothing to connect to, and the retry loop waits for it to come back.
+        runCatching { Graph.ble.autoConnect() }
+
         // osmdroid identifies your app to the tile server with this user agent.
         // OSM's public tiles are meant for light personal use only.
         val config = Configuration.getInstance()

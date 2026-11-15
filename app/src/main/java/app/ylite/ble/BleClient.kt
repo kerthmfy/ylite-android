@@ -44,6 +44,12 @@ import java.util.UUID
 private const val TAG = "BleClient"
 private const val STALL_MS = 4_000L
 private const val INVITE_BACKOFF_CAP_MS = 30_000L
+
+/** How long to wait for the stack to answer a connectGatt() before dropping it. */
+private const val CONNECT_WAIT_MS = 8_000L
+
+/** How long the link may sit subscription-ready without a single notification. */
+private const val SILENCE_MS = 10_000L
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 data class ScanHit(
@@ -105,6 +111,43 @@ class BleClient(private val context: Context) {
     private var connectAttempts = 0
     private var bondReceiver: BroadcastReceiver? = null
     private var pendingBondDevice: BluetoothDevice? = null
+
+    /** When the current link came up, so a drop can say how long it survived. */
+    @Volatile
+    private var connectedAt = 0L
+
+    /** Frames seen on the current link, used by the silence watchdog. */
+    @Volatile
+    private var framesOnLink = 0
+
+    /** Bumped on every drop, so a connect attempt knows the stack already gave up. */
+    @Volatile
+    private var dropSeq = 0
+
+    /** One automatic attempt per process: an explicit DISCONNECT stays disconnected. */
+    private var autoConnectDone = false
+
+    private val clock = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+
+    /** A GATT status is a number to everyone except the person reading the log. */
+    private fun statusHint(status: Int): String = when (status) {
+        0 -> ""
+        8 -> " (timeout — the CCU stopped answering)"
+        19 -> " (the CCU closed the link)"
+        133 -> " (GATT error — usually a stale pairing; forget the CCU and pair again)"
+        137 -> " (bond lost — pair again)"
+        147 -> " (link terminated by the phone)"
+        else -> ""
+    }
+
+    /**
+     * One timestamped line for the Debug tab. The whole point is that a dropped link,
+     * a rejected CCCD write and a quiet CCU stop looking identical on screen.
+     */
+    private fun logLink(line: String) {
+        val stamp = clock.format(java.util.Date())
+        Graph.setLive { it.copy(linkLog = (listOf("$stamp $line") + it.linkLog).take(60)) }
+    }
 
     private val ops = Channel<GattOp>(Channel.UNLIMITED)
 
@@ -203,9 +246,13 @@ class BleClient(private val context: Context) {
             return
         }
         wanted = address to name
+        // Remembered so the app can return to it by itself on the next ignition.
+        Graph.settings.ccuAddress = address
+        name?.let { Graph.settings.ccuName = it }
         connectAttempts = 0
         stopScan()
         reconnectJob?.cancel()
+        logLink("connect $address (${name ?: "no name"})")
         Graph.setLive {
             it.copy(
                 status = "Connecting to ${name ?: address}…",
@@ -216,9 +263,49 @@ class BleClient(private val context: Context) {
         scope.launch { open(address) }
     }
 
+    /**
+     * Reconnect on launch: the CCU is only awake while the ignition is on, so this
+     * either works straight away or the retry loop catches it when the scooter starts.
+     */
+    fun autoConnect() {
+        if (autoConnectDone || wanted != null) return
+        if (!hasConnectPermission() || hasScanPermission().not()) return
+        val address = Graph.settings.ccuAddress ?: return
+        val name = Graph.settings.ccuName
+        autoConnectDone = true
+        wanted = address to name
+        connectAttempts = 0
+        logLink("auto-connect to saved CCU $address")
+        Graph.setLive {
+            it.copy(status = "Reconnecting to ${name ?: address}…", deviceAddress = address, deviceName = name)
+        }
+        scope.launch {
+            open(address)
+            scheduleReconnect()
+        }
+    }
+
+    /** The Debug tab's RECONNECT button: start over with the remembered device. */
+    fun reconnectNow() {
+        val address = Graph.settings.ccuAddress
+        if (address == null) {
+            Graph.setLive { it.copy(status = "No CCU saved yet — open Manage and connect once") }
+            return
+        }
+        wanted = address to Graph.settings.ccuName
+        connectAttempts = 0
+        reconnectJob?.cancel()
+        logLink("manual reconnect to $address")
+        scope.launch {
+            open(address)
+            scheduleReconnect()
+        }
+    }
+
     fun disconnect() {
         wanted = null
         reconnectJob?.cancel()
+        logLink("disconnect requested")
         unregisterBondReceiver()
         scope.launch {
             val g = gatt
@@ -242,6 +329,7 @@ class BleClient(private val context: Context) {
             device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         }.getOrNull()
         if (g == null) {
+            logLink("connectGatt failed for $address")
             Graph.setLive { it.copy(status = "connectGatt failed for $address") }
             scheduleReconnect()
             return
@@ -259,6 +347,7 @@ class BleClient(private val context: Context) {
 
     /** Drop the connection, cancel queued work, and try again if a connection is still wanted. */
     private fun teardown(reason: String) {
+        logLink("teardown: $reason")
         Graph.setLive { it.copy(connected = false, status = reason) }
         val g = gatt
         runCatching { g?.disconnect() }
@@ -271,32 +360,53 @@ class BleClient(private val context: Context) {
         scheduleReconnect()
     }
 
+    /**
+     * Keep trying for as long as a connection is wanted.
+     *
+     * The CCU only exists while the ignition is on, so "no answer" is the normal state
+     * of a parked scooter. This loop backs off to one attempt every 30 s and never gives
+     * up, so switching the scooter on is enough to get connected — no tapping.
+     */
     private fun scheduleReconnect() {
-        val target = wanted ?: return
-        connectAttempts++
-        if (connectAttempts > 6) {
-            wanted = null
-            reconnectJob?.cancel()
-            Graph.setLive {
-                it.copy(connected = false, status = "Gave up reconnecting. Open Manage and tap Connect.")
-            }
-            return
-        }
         if (reconnectJob?.isActive == true) return
+        if (wanted == null) return
         reconnectJob = scope.launch {
-            var backoff = 1_000L
+            var backoff = 2_000L
             while (isActive) {
-                val stillWanted = wanted ?: break
-                if (gatt != null && !stillWanted.first.isEmpty()) {
-                    // A GATT object already exists; wait for its callback rather than opening another.
-                    delay(3_000)
-                    if (Graph.live.value.connected) break
+                val target = wanted ?: break
+                if (Graph.live.value.connected) {
+                    backoff = 2_000L
+                    delay(2_000)
+                    continue
                 }
-                Graph.setLive { it.copy(status = "Reconnecting in ${backoff / 1000}s…") }
+                val startSeq = dropSeq
+                if (gatt == null) {
+                    connectAttempts++
+                    logLink("connect attempt #$connectAttempts")
+                    open(target.first)
+                }
+
+                // Wait for the stack to answer, and stop waiting the moment it reports a
+                // drop: a failed attempt should not cost the full timeout on top of backoff.
+                val deadline = System.currentTimeMillis() + CONNECT_WAIT_MS
+                while (isActive && System.currentTimeMillis() < deadline &&
+                    !Graph.live.value.connected && dropSeq == startSeq
+                ) {
+                    delay(500)
+                }
+                if (Graph.live.value.connected) {
+                    backoff = 2_000L
+                    continue
+                }
+
+                logLink("attempt failed — retry in ${backoff / 1000}s")
+                val dead = gatt
+                runCatching { dead?.close() }
+                if (gatt === dead) gatt = null
+                Graph.setLive {
+                    it.copy(connected = false, status = "Scooter not answering — retrying in ${backoff / 1000}s")
+                }
                 delay(backoff)
-                if (wanted == null) break
-                if (gatt == null) open(stillWanted.first)
-                delay(5_000)
                 backoff = (backoff * 2).coerceAtMost(INVITE_BACKOFF_CAP_MS)
             }
         }
@@ -309,6 +419,19 @@ class BleClient(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             Log.i(TAG, "onConnectionStateChange status=$status newState=$newState")
+            val stateName = when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> "connected"
+                BluetoothProfile.STATE_DISCONNECTED -> "disconnected"
+                BluetoothProfile.STATE_CONNECTING -> "connecting"
+                BluetoothProfile.STATE_DISCONNECTING -> "disconnecting"
+                else -> "state $newState"
+            }
+            val lived = if (connectedAt > 0) {
+                " after %.1f s".format((System.currentTimeMillis() - connectedAt) / 1000.0)
+            } else {
+                ""
+            }
+            logLink("$stateName$lived (status $status${statusHint(status)})")
 
             // 5 = insufficient authentication, 15 = insufficient encryption: the CCU wants
             // a bonded link. Blindly reconnecting here is what produced the repeated
@@ -340,6 +463,8 @@ class BleClient(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connectAttempts = 0
+                    connectedAt = System.currentTimeMillis()
+                    framesOnLink = 0
                     Graph.setLive {
                         it.copy(
                             connected = true,
@@ -352,7 +477,14 @@ class BleClient(private val context: Context) {
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    Graph.setLive { it.copy(connected = false, status = "Disconnected") }
+                    dropSeq++
+                    Graph.setLive {
+                        it.copy(
+                            connected = false,
+                            status = "Link lost (status $status) — reconnecting",
+                        )
+                    }
+                    connectedAt = 0
                     closeGatt(g)
                     scheduleReconnect()
                 }
@@ -383,6 +515,7 @@ class BleClient(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val value = characteristic.value ?: return
+            framesOnLink++
             val service = characteristic.service?.uuid?.toString().orEmpty()
             val event = BleFrameEvent(
                 time = System.currentTimeMillis(),
@@ -459,10 +592,30 @@ class BleClient(private val context: Context) {
             }
         }
 
+        logLink("services discovered: $readable readable, $streams notify channel(s), bond ${bondLabel(bondState)}")
+
         // Capability, not confirmation: whether the subscribe actually took is what the
         // link log reports, one line per characteristic.
         Graph.setLive {
             it.copy(status = "Connected — $readable readable, $streams notify channel(s)")
+        }
+        watchSilence(g)
+    }
+
+    /**
+     * "Subscribed but nothing arrives" and "the link died" looked the same on the Ride
+     * tab, so say which one it is once the link has had time to speak.
+     */
+    private fun watchSilence(g: BluetoothGatt) {
+        val startFrames = framesOnLink
+        scope.launch {
+            delay(SILENCE_MS)
+            if (gatt !== g || !Graph.live.value.connected) return@launch
+            if (framesOnLink != startFrames) return@launch
+            logLink("no notifications in ${SILENCE_MS / 1000}s (subscribed, link still up)")
+            Graph.setLive {
+                it.copy(status = "Subscribed, but the CCU is silent — see the link log")
+            }
         }
     }
 

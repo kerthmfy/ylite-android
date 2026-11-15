@@ -18,6 +18,12 @@ time — blank (`—`) until the decoder knows where the bytes live, never a fak
 Debug → **CAPTURE FRAMES** stores notifications without starting a ride, and
 **EXPORT CAPTURE** writes them to a CSV, which is how a parked capture is collected.
 
+The CCU is remembered after the first connection, so Y-Lite reconnects by itself when
+the scooter is switched on — including after a relaunch. It retries indefinitely,
+backing off to one attempt every 30 s, because "no answer" is simply a parked scooter
+with the ignition off. Debug → **RECONNECT** starts over on demand, and the **LINK LOG**
+timestamps every attempt, drop and status code in plain words.
+
 **Fuel.** Log fill-ups with a station, full/partial tank, and any two of litres,
 price per litre and total (the third is computed, the same way Fuelio does it).
 Consumption is calculated across full tanks only, so a top-up does not invent a tank.
@@ -92,7 +98,9 @@ system sheet.
   until the CCU's payload layout is known from captured frames. Everything that does
   not depend on it — GPS, fuel, maintenance — works today. The Debug tab's LINK LOG
   shows whether the notification subscription actually succeeded, because a CCCD write
-  that fails looks exactly like a quiet CCU.
+  that fails looks exactly like a quiet CCU: `subscribed ok` with no frames is a silent
+  CCU, `subscribe failed (status N)` is a rejected one, and a drop carries Android's
+  status with a short explanation.
 - **No bulk offline map download.** OpenStreetMap's tile policy forbids it and osmdroid
   enforces that, so the map relies on its normal cache of tiles you have already seen.
 - **No write support** to the CCU. That is a design decision, not a missing feature.

@@ -15,6 +15,13 @@ class MainActivity : ComponentActivity() {
 
     private var ready = false
 
+    override fun onStart() {
+        super.onStart()
+        // The first launch asks for Bluetooth permission, so the automatic connection
+        // to the remembered CCU is retried here as well as at process start.
+        Graph.ble.autoConnect()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be called before super.onCreate: it swaps the splash theme for the app theme.
         val splash = installSplashScreen()

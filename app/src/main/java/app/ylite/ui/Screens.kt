@@ -1057,6 +1057,17 @@ private fun DebugScreen(live: LiveState) {
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PillButton(
+                    label = if (live.connected) "DISCONNECT" else "RECONNECT",
+                    filled = !live.connected,
+                ) {
+                    if (live.connected) Graph.ble.disconnect() else Graph.ble.reconnectNow()
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(
                     label = if (live.capturing) "STOP CAPTURE" else "CAPTURE FRAMES",
                     filled = !live.capturing,
                 ) {
