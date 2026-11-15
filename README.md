@@ -1,12 +1,8 @@
 # Y-Lite
 
-A read-only Android companion for a Yamaha scooter's CCU, built as a replacement for
-the official Y-Connect app. It records rides, logs fuel, and keeps a scooter's history
-on your own phone — none of it leaves the device.
+An unofficial replacement for the official Y-Connect app. It records rides, logs fuel, and keeps a scooter's history
+on your own phone.
 
-Not affiliated with Yamaha. Nothing here claims to satisfy Yamaha's terms; it is a
-personal tool that talks to a device you own using the standard Bluetooth protocol
-the CCU already exposes.
 
 ## What it does today
 
@@ -73,9 +69,9 @@ release-signed build.
 The CCU only powers up with the ignition on, and only one client can hold the link, so
 keep the official app closed while Y-Lite is connected.
 
-## Where the data lives
+## Data
 
-Room database `ylite.db` in the app's private storage, currently schema **v5** with
+The database `ylite.db` in the app's private storage, currently schema **v5** with
 hand-written migrations covering every version since v1, so upgrades never drop rides.
 
 Exports land in `Android/data/app.ylite/files/exports/` and are shared through the
@@ -92,14 +88,8 @@ system sheet.
 - **No ride auto-start.** Start and stop are manual; a killed process leaves a ride
   with no end time, which History shows as `NO END`.
 
-## Layout
 
-```
-app/src/main/java/app/ylite/
-  ble/        scan, connect, bond handling, GATT queue, frame decoding
-  data/       Room entities and DAOs, telemetry model, fuel maths, maintenance table
-  export/     GPX, CSV and the full backup zip
-  fuelio/     Fuelio backup CSV importer
-  service/    foreground ride recorder
-  ui/         Compose screens, theme, osmdroid wrapper
-```
+
+Not affiliated with Yamaha. Nothing here claims to satisfy Yamaha's terms; it is a
+personal tool that talks to a device you own using the standard Bluetooth protocol
+the CCU already exposes.
