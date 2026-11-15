@@ -446,7 +446,7 @@ class BleClient(private val context: Context) {
         // Ask for the bond first; after bonding we reconnect and subscribe on a paired link.
         if (bondState != BluetoothDevice.BOND_BONDED) {
             Graph.setLive {
-                it.copy(status = "CCU found — $streams notification channel(s). Pairing needed.")
+                it.copy(status = "CCU found — $streams notify channel(s). Pairing needed.")
             }
             requestBond(g.device)
             return
@@ -459,8 +459,10 @@ class BleClient(private val context: Context) {
             }
         }
 
+        // Capability, not confirmation: whether the subscribe actually took is what the
+        // link log reports, one line per characteristic.
         Graph.setLive {
-            it.copy(status = "Connected — $readable readable, $streams subscribed")
+            it.copy(status = "Connected — $readable readable, $streams notify channel(s)")
         }
     }
 
@@ -632,6 +634,15 @@ private class ReadOp(
     }
 
     override fun onRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        // A read that silently yields nothing is the difference between "the CCU has
+        // no model string" and "the read failed", so both land in the link log.
+        val value = characteristic.value
+        val line = if (status == BluetoothGatt.GATT_SUCCESS) {
+            "read ${shortUuid(characteristic.uuid)} = " + (value?.hex() ?: "(empty)")
+        } else {
+            "read ${shortUuid(characteristic.uuid)} failed (status $status)"
+        }
+        Graph.setLive { it.copy(linkLog = (listOf(line) + it.linkLog).take(30)) }
         done.complete(Unit)
     }
 }
@@ -641,14 +652,22 @@ private class SubscribeOp(
     private val characteristic: BluetoothGattCharacteristic,
 ) : GattOp("subscribe ${shortUuid(characteristic.uuid)}") {
 
-    private val done = CompletableDeferred<Unit>()
+    private val done = CompletableDeferred<Boolean>()
 
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
     override suspend fun run(): Boolean {
-        if (!gatt.setCharacteristicNotification(characteristic, true)) return false
+        if (!gatt.setCharacteristicNotification(characteristic, true)) {
+            report("local notify enable failed")
+            return false
+        }
 
-        val descriptor = characteristic.getDescriptor(CCCD_UUID) ?: return true
+        val descriptor = characteristic.getDescriptor(CCCD_UUID)
+        if (descriptor == null) {
+            report("no CCCD on this characteristic")
+            return true
+        }
+
         val value =
             if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) {
                 BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
@@ -656,16 +675,38 @@ private class SubscribeOp(
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             }
         descriptor.value = value
-        if (!gatt.writeDescriptor(descriptor)) return false
-        done.await()
-        return true
+        if (!gatt.writeDescriptor(descriptor)) {
+            report("descriptor write rejected by the stack")
+            return false
+        }
+        return done.await()
     }
 
     override fun abort() {
-        done.complete(Unit)
+        done.complete(false)
     }
 
+    /**
+     * The CCCD write is the whole subscription: if it comes back non-zero, no
+     * notifications will ever arrive however "subscribed" the UI looks.
+     */
     override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-        done.complete(Unit)
+        val ok = status == BluetoothGatt.GATT_SUCCESS
+        report(if (ok) "subscribed ok" else "subscribe failed (status $status)")
+        done.complete(ok)
+    }
+
+    private fun report(outcome: String) {
+        val line = "notify ${shortUuid(characteristic.uuid)}: $outcome"
+        Graph.setLive {
+            it.copy(
+                linkLog = (listOf(line) + it.linkLog).take(30),
+                status = if (outcome.startsWith("subscribed ok")) {
+                    "Subscribed to ${shortUuid(characteristic.uuid)} — waiting for frames"
+                } else {
+                    "Subscription problem on ${shortUuid(characteristic.uuid)}: $outcome"
+                },
+            )
+        }
     }
 }

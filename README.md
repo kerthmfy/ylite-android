@@ -7,12 +7,16 @@ on your own phone.
 ## What it does today
 
 **Rides.** Start/stop a ride from the Ride tab. GPS fixes are recorded once a second,
-distance is accumulated, and the map follows you. Every ride is kept in History with
-duration, distance, max speed and the track drawn on OpenStreetMap tiles.
+distance is accumulated, and the map follows you. The map gets a light location
+subscription while the tab is open even before a ride starts, so it is not blind while
+you are parked. Every ride is kept in History with duration, distance, max speed and
+the track drawn on OpenStreetMap tiles.
 
 **Scooter link.** Scan for the CCU, bond with it, and every notification it sends is
 recorded. A live dashboard shows trip, odometer, fuel, temperature, battery and elapsed
 time — blank (`—`) until the decoder knows where the bytes live, never a fake zero.
+Debug → **CAPTURE FRAMES** stores notifications without starting a ride, and
+**EXPORT CAPTURE** writes them to a CSV, which is how a parked capture is collected.
 
 **Fuel.** Log fill-ups with a station, full/partial tank, and any two of litres,
 price per litre and total (the third is computed, the same way Fuelio does it).
@@ -81,7 +85,9 @@ system sheet.
 
 - **The telemetry decoder is a stub.** It keeps the raw bytes and returns no values
   until the CCU's payload layout is known from captured frames. Everything that does
-  not depend on it — GPS, fuel, maintenance — works today.
+  not depend on it — GPS, fuel, maintenance — works today. The Debug tab's LINK LOG
+  shows whether the notification subscription actually succeeded, because a CCCD write
+  that fails looks exactly like a quiet CCU.
 - **No bulk offline map download.** OpenStreetMap's tile policy forbids it and osmdroid
   enforces that, so the map relies on its normal cache of tiles you have already seen.
 - **No write support** to the CCU. That is a design decision, not a missing feature.

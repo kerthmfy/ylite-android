@@ -4,7 +4,12 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -45,6 +50,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -76,6 +82,7 @@ import app.ylite.data.GpsPoint
 import app.ylite.data.Ride
 import app.ylite.data.Scooters
 import app.ylite.export.Exporters
+import app.ylite.service.FrameCapture
 import app.ylite.service.RideService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -182,6 +189,10 @@ private fun RideScreen(live: LiveState) {
     var lastKnown by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val hits by Graph.ble.scanResults.collectAsStateWithLifecycle()
+
+    // Before a ride starts there is no service to record fixes, which left the map
+    // blank until START RIDE. Ask for updates while the tab is open instead.
+    AmbientLocation(enabled = !live.recording)
 
     LaunchedEffect(live.rideId, live.gpsPoints) {
         val id = live.rideId
@@ -407,6 +418,64 @@ private fun RideScreen(live: LiveState) {
 
     if (sheetOpen) {
         DeviceSheet(live = live, hits = hits, onDismiss = { sheetOpen = false })
+    }
+}
+
+/**
+ * A light location subscription for the map itself.
+ *
+ * Rides record their own fixes in the foreground service; this only keeps the Ride tab
+ * from being blind while parked, and stops as soon as a ride takes over.
+ */
+@Composable
+private fun AmbientLocation(enabled: Boolean) {
+    val context = LocalContext.current
+
+    DisposableEffect(enabled) {
+        if (!enabled) return@DisposableEffect onDispose {}
+
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) return@DisposableEffect onDispose {}
+
+        val manager = context.getSystemService(LocationManager::class.java)
+        // A full object, not a lambda: older Android versions call the other methods too.
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                Graph.setLive {
+                    it.copy(
+                        lat = location.latitude,
+                        lon = location.longitude,
+                        speedMps = if (location.hasSpeed()) location.speed else it.speedMps,
+                        altitude = if (location.hasAltitude()) location.altitude else it.altitude,
+                    )
+                }
+            }
+
+            @Suppress("DEPRECATION")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+
+            override fun onProviderEnabled(provider: String) = Unit
+
+            override fun onProviderDisabled(provider: String) = Unit
+        }
+
+        runCatching {
+            val last = manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: manager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            if (last != null) listener.onLocationChanged(last)
+            manager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                3_000L,
+                0f,
+                listener,
+                Looper.getMainLooper(),
+            )
+        }
+
+        onDispose { runCatching { manager.removeUpdates(listener) } }
     }
 }
 
@@ -961,6 +1030,9 @@ private fun RideDetailScreen(rideId: Long, onBack: () -> Unit) {
 @Composable
 private fun DebugScreen(live: LiveState) {
     val colors = LocalYColors.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val exporters = remember { Exporters(context) }
 
     Column(
         Modifier
@@ -980,6 +1052,42 @@ private fun DebugScreen(live: LiveState) {
             live.deviceAddress?.let { Text(it, style = MonoValue, color = colors.muted) }
             Text("bond: ${live.bond}", style = MonoCode, color = colors.muted)
             live.model?.let { Text("model: $it", style = MonoCode, color = colors.muted) }
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(
+                    label = if (live.capturing) "STOP CAPTURE" else "CAPTURE FRAMES",
+                    filled = !live.capturing,
+                ) {
+                    if (live.capturing) FrameCapture.stop() else FrameCapture.start()
+                }
+                PillButton(label = "EXPORT CAPTURE") {
+                    scope.launch {
+                        val frames = withContext(Dispatchers.IO) {
+                            Graph.dao.frames(FrameCapture.CAPTURE_RIDE_ID)
+                        }
+                        if (frames.isEmpty()) {
+                            Toast.makeText(context, "Nothing captured yet.", Toast.LENGTH_LONG).show()
+                        } else {
+                            val file = withContext(Dispatchers.IO) { exporters.captureCsv(frames) }
+                            share(context, file, "text/csv")
+                        }
+                    }
+                }
+            }
+            Text(
+                "Capture stores every CCU notification without starting a ride, so a parked session can be exported for decoding. Keep Y-Lite in the foreground while it runs.",
+                fontSize = 11.sp,
+                lineHeight = 17.sp,
+                color = colors.muted,
+            )
+
+            if (live.linkLog.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text("LINK LOG", style = MicroLabel, color = colors.muted)
+                MonoBlock(live.linkLog.joinToString("\n"))
+            }
 
             Spacer(Modifier.height(10.dp))
             Text("FRAMES (NEWEST FIRST)", style = MicroLabel, color = colors.muted)
