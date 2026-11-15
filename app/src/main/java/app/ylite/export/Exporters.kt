@@ -28,6 +28,13 @@ class Exporters(private val context: Context) {
     fun framesCsv(ride: Ride, frames: List<BleFrame>): File =
         write(ride, "frames.csv", framesCsvText(frames))
 
+    /** Frames captured without a ride, named by when the export was taken. */
+    fun captureCsv(frames: List<BleFrame>): File {
+        val file = File(directory(), "capture-${fileStamp(System.currentTimeMillis())}.csv")
+        file.writeText(framesCsvText(frames))
+        return file
+    }
+
     /**
      * One zip with every ride, every frame and every log. The point is that a
      * lost phone costs you the phone, not the year of records on it.

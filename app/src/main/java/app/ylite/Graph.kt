@@ -27,6 +27,13 @@ data class LiveState(
     val deviceAddress: String? = null,
     val bond: String = "unknown",
     val gattDump: String = "",
+    /**
+     * Newest first: what was actually read or subscribed to since connecting. The GATT
+     * table shows what the CCU offers; this shows what the phone managed to turn on.
+     */
+    val linkLog: List<String> = emptyList(),
+    /** True while notifications are being stored without a ride attached. */
+    val capturing: Boolean = false,
     val frameCount: Int = 0,
     val lastFrameHex: String = "",
     /** Newest first, capped so a chatty CCU cannot grow this without bound. */
