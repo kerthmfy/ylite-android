@@ -11,7 +11,13 @@ class YApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)
-        Graph.setLive { it.copy(model = Graph.settings.scooterModel) }
+        Graph.setLive {
+            it.copy(
+                model = Graph.settings.scooterModel,
+                themeMode = Graph.settings.themeMode,
+                odometerOptional = Graph.settings.odometerOptional,
+            )
+        }
 
         // A remembered CCU is reconnected on its own: with the ignition off there is
         // nothing to connect to, and the retry loop waits for it to come back.

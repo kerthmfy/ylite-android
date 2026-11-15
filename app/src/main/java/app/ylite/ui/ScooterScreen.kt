@@ -91,6 +91,7 @@ fun ScooterScreen(live: LiveState) {
     var exportLabel by remember { mutableStateOf<String?>(null) }
     var addingInterval by remember { mutableStateOf(false) }
     var editingInterval by remember { mutableStateOf<Interval?>(null) }
+    var openedInterval by remember { mutableStateOf<Interval?>(null) }
 
     // A ride that ends is also a scooter that just parked, so re-read after it.
     LaunchedEffect(live.recording, live.gpsPoints) {
@@ -277,29 +278,70 @@ fun ScooterScreen(live: LiveState) {
                 val remaining = if (due != null && odometer != null) due - odometer else null
                 val overdue = remaining != null && remaining <= 0
 
+                // How much of the interval is left, as a bar that empties towards the due date.
+                val left = when {
+                    remaining == null -> 0f
+                    else -> (remaining / interval.everyKm).coerceIn(0.0, 1.0).toFloat()
+                }
+
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.surfaceRaised)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { editingInterval = interval }
-                            .padding(vertical = 2.dp),
+                            .clickable { openedInterval = interval },
                     ) {
-                        Text(interval.kind, fontSize = 14.sp, color = colors.text)
-                        Spacer(Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                interval.kind,
+                                fontSize = 15.sp,
+                                color = colors.text,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "›",
+                                fontSize = 18.sp,
+                                color = colors.muted,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
                         Text(
                             text = when {
                                 last == null -> "not logged yet · every %.0f km".format(interval.everyKm)
                                 remaining == null -> "due at %.0f km".format(due)
                                 overdue -> "overdue by %.0f km".format(-remaining)
-                                else -> "in %.0f km".format(remaining)
+                                else -> "%.0f km to go · every %.0f".format(remaining, interval.everyKm)
                             },
                             style = MonoCode,
                             color = if (overdue) colors.accent else colors.muted,
                         )
+                        if (last != null) {
+                            Spacer(Modifier.height(7.dp))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(colors.line),
+                            ) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth(left)
+                                        .height(3.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(if (overdue) colors.accent else colors.good),
+                                )
+                            }
+                        }
                     }
                     Text(
                         text = "DONE",
@@ -328,10 +370,9 @@ fun ScooterScreen(live: LiveState) {
                                     }
                                 }
                             }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                     )
                 }
-                HorizontalDivider(color = colors.line, thickness = 1.dp)
             }
 
             Spacer(Modifier.height(12.dp))
@@ -343,6 +384,51 @@ fun ScooterScreen(live: LiveState) {
                 lineHeight = 17.sp,
                 color = colors.muted,
             )
+        }
+
+        Section("SETTINGS") {
+            Text("APPEARANCE", style = MicroLabel, color = colors.muted)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("system" to "SYSTEM", "light" to "LIGHT", "dark" to "DARK").forEach { (mode, label) ->
+                    PillButton(label = label, filled = live.themeMode == mode) {
+                        Graph.settings.themeMode = mode
+                        Graph.setLive { it.copy(themeMode = mode) }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable {
+                        val next = !live.odometerOptional
+                        Graph.settings.odometerOptional = next
+                        Graph.setLive { it.copy(odometerOptional = next) }
+                    }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("ODOMETER OPTIONAL", style = MicroLabel, color = colors.muted)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Adds a NO READING switch to the fill-up form, for when you only have the receipt. Without a reading the row stays out of the km/L maths.",
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = colors.muted,
+                    )
+                }
+                Text(
+                    text = if (live.odometerOptional) "ON" else "OFF",
+                    style = MicroLabel,
+                    color = colors.accent,
+                    modifier = Modifier.padding(start = 12.dp),
+                )
+            }
         }
 
         Section("DATA") {
@@ -407,6 +493,7 @@ fun ScooterScreen(live: LiveState) {
             lastOdometer = odometer,
             stations = stations,
             visits = visits,
+            odometerOptional = live.odometerOptional,
             onDismiss = { addOpen = false },
         )
     }
@@ -415,6 +502,18 @@ fun ScooterScreen(live: LiveState) {
     }
     editingInterval?.let { interval ->
         IntervalSheet(existing = interval, onDismiss = { editingInterval = null })
+    }
+    openedInterval?.let { interval ->
+        IntervalDetailSheet(
+            interval = interval,
+            services = services,
+            odometer = odometer,
+            onEdit = {
+                openedInterval = null
+                editingInterval = interval
+            },
+            onDismiss = { openedInterval = null },
+        )
     }
 }
 
@@ -432,10 +531,14 @@ private fun currentOdometerKm(live: LiveState, fillups: List<Fillup>): Double? {
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
     val colors = LocalYColors.current
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(18.dp))
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-        Text(title, style = MicroLabel, color = colors.muted)
-        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(16.dp).height(1.dp).background(colors.accent))
+            Spacer(Modifier.width(8.dp))
+            Text(title, style = MicroLabel, color = colors.muted)
+        }
+        Spacer(Modifier.height(12.dp))
         content()
         Spacer(Modifier.height(18.dp))
         HorizontalDivider(color = colors.line, thickness = 1.dp)
@@ -446,22 +549,31 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 private fun FillupRow(fillup: Fillup, kmPerL: Double?, stationName: String?, onDelete: () -> Unit) {
     val colors = LocalYColors.current
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.surfaceRaised)
+            .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(
-                text = "%.1f km · %.2f L".format(fillup.odometerKm, fillup.litres),
+                text = if (fillup.odometerKnown) {
+                    "%.1f km · %.2f L".format(fillup.odometerKm, fillup.litres)
+                } else {
+                    "%.2f L".format(fillup.litres)
+                },
                 style = MonoValue,
                 color = colors.text,
             )
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(3.dp))
             Text(
                 text = listOfNotNull(
                     fmtDay(fillup.time),
                     stationName,
                     if (fillup.isFull) null else "partial",
-                    kmPerL?.let { "%.1f km/L".format(it) },
+                    if (fillup.odometerKnown) null else "no reading",
                     fillup.note,
                 ).joinToString(" · "),
                 style = MonoCode,
@@ -469,9 +581,21 @@ private fun FillupRow(fillup: Fillup, kmPerL: Double?, stationName: String?, onD
                 maxLines = 1,
             )
         }
+        kmPerL?.let {
+            Text(
+                text = "%.1f".format(it),
+                style = MonoValue.copy(fontSize = 12.sp),
+                color = colors.onAccent,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(colors.accent)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+        }
         fillup.costTotal?.let {
             Text("%.2f".format(it), style = MonoValue, color = colors.muted)
-            Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(10.dp))
         }
         Text(
             text = "×",
@@ -493,21 +617,33 @@ private fun FillupSheet(
     lastOdometer: Double?,
     stations: List<Station>,
     visits: Map<Long, Int>,
+    odometerOptional: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalYColors.current
     val scope = rememberCoroutineScope()
     // A hint, never a value: a prefilled field swallows the first digit you type.
     var odometer by rememberSaveable { mutableStateOf("") }
+    var trip by rememberSaveable { mutableStateOf("") }
+    var noReading by rememberSaveable { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<Station?>(null) }
+    var renameText by remember { mutableStateOf("") }
     var amounts by rememberSaveable(stateSaver = fillAmountsSaver) { mutableStateOf(FillAmounts()) }
     var fullTank by rememberSaveable { mutableStateOf(true) }
     var stationId by rememberSaveable { mutableStateOf<Long?>(null) }
     var pickingStation by rememberSaveable { mutableStateOf(false) }
     var newStation by rememberSaveable { mutableStateOf("") }
 
-    val km = odometer.toNumberOrNull()
+    // Either the dash reading, or the trip meter added to the last reading.
+    val typedKm = odometer.toNumberOrNull()
+    val tripKm = trip.toNumberOrNull()
+    val resolvedKm = when {
+        typedKm != null -> typedKm
+        tripKm != null && lastOdometer != null -> lastOdometer + tripKm
+        else -> null
+    }
     val amount = amounts.litresValue
-    val valid = km != null && amount != null && amount > 0.0
+    val valid = amount != null && amount > 0.0 && (noReading || resolvedKm != null)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -540,12 +676,74 @@ private fun FillupSheet(
                 color = colors.muted,
             )
 
-            NumberField(
-                label = "ODOMETER (KM)",
-                value = odometer,
-                placeholder = lastOdometer?.let { "last %.1f".format(it) } ?: "12345.0",
-                onValueChange = { odometer = it },
-            )
+            if (noReading) {
+                Text(
+                    text = "Litres and cost only. Without a reading this fill-up stays out of the km/L maths.",
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    color = colors.muted,
+                )
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumberField(
+                        label = "ODOMETER (KM)",
+                        value = odometer,
+                        placeholder = lastOdometer?.let { "last %.1f".format(it) } ?: "12345.0",
+                        modifier = Modifier.weight(1f),
+                    ) { odometer = it }
+                    if (lastOdometer != null) {
+                        NumberField(
+                            label = "OR TRIP (KM)",
+                            value = trip,
+                            placeholder = "12.4",
+                            modifier = Modifier.weight(1f),
+                        ) { value ->
+                            trip = value
+                            // Typing a trip means you are not copying the dash reading.
+                            if (value.isNotBlank()) odometer = ""
+                        }
+                    }
+                }
+                if (tripKm != null && lastOdometer != null) {
+                    Text(
+                        text = "trip %.1f + last %.1f = %.1f km".format(
+                            tripKm,
+                            lastOdometer,
+                            lastOdometer + tripKm,
+                        ),
+                        style = MonoCode,
+                        color = colors.muted,
+                    )
+                }
+            }
+
+            if (odometerOptional) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { noReading = !noReading }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("NO READING", style = MicroLabel, color = colors.muted)
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            "Skip the odometer entirely — just fuel and money.",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = colors.muted,
+                        )
+                    }
+                    Text(
+                        text = if (noReading) "YES" else "NO",
+                        style = MicroLabel,
+                        color = colors.accent,
+                        modifier = Modifier.padding(start = 12.dp),
+                    )
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 NumberField(
                     label = "LITRES",
@@ -678,6 +876,18 @@ private fun FillupSheet(
                                 }
                             }
                             Text(
+                                text = "RENAME",
+                                style = MicroLabel,
+                                color = colors.muted,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        renaming = station
+                                        renameText = station.name
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
+                            Text(
                                 text = "★",
                                 fontSize = 16.sp,
                                 color = if (station.favorite) colors.accent else colors.muted,
@@ -701,6 +911,50 @@ private fun FillupSheet(
                         fontSize = 11.sp,
                         color = colors.muted,
                     )
+                }
+
+                renaming?.let { station ->
+                    Spacer(Modifier.height(10.dp))
+                    Text("RENAME STATION", style = MicroLabel, color = colors.muted)
+                    Spacer(Modifier.height(6.dp))
+                    NumberField(
+                        label = "NAME",
+                        value = renameText,
+                        placeholder = "Petron Sumulong",
+                    ) { renameText = it }
+                    Text(
+                        "A place name like \"Antipolo\" becomes useful once you name the station you actually fill at. If the new name already exists, the two merge and their visits add up.",
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = colors.muted,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        PillButton(
+                            label = "SAVE NAME",
+                            filled = true,
+                            enabled = renameText.isNotBlank(),
+                            onClick = {
+                                val name = renameText.trim()
+                                if (name.isEmpty()) return@PillButton
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        val others = Graph.dao.stations().first()
+                                        val clash = others.firstOrNull {
+                                            it.id != station.id && it.name.trim().equals(name, ignoreCase = true)
+                                        }
+                                        if (clash != null) {
+                                            Graph.dao.reassignFillups(station.id, clash.id)
+                                            Graph.dao.deleteStation(station.id)
+                                        } else {
+                                            Graph.dao.updateStation(station.copy(name = name))
+                                        }
+                                    }
+                                    renaming = null
+                                }
+                            },
+                        )
+                        PillButton(label = "CANCEL") { renaming = null }
+                    }
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -733,19 +987,20 @@ private fun FillupSheet(
                 filled = true,
                 enabled = valid,
                 onClick = {
-                    val odometerKm = km ?: return@PillButton
                     val amountLitres = amount ?: return@PillButton
+                    val savedKm = resolvedKm ?: lastOdometer ?: 0.0
                     scope.launch {
                         withContext(Dispatchers.IO) {
                             Graph.dao.insertFillup(
                                 Fillup(
                                     time = System.currentTimeMillis(),
-                                    odometerKm = odometerKm,
+                                    odometerKm = savedKm,
                                     litres = amountLitres,
                                     costTotal = amounts.totalValue
                                         ?: amounts.priceValue?.let { price -> amountLitres * price },
                                     isFull = fullTank,
                                     stationId = stationId,
+                                    odometerKnown = resolvedKm != null,
                                 ),
                             )
                         }
@@ -790,6 +1045,142 @@ private fun NumberField(
                 cursorBrush = SolidColor(colors.accent),
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+    }
+}
+
+/**
+ * Everything about one job: where it stands, every time it was done, and a way to log
+ * it. The history was previously invisible — logged services existed only in the export.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IntervalDetailSheet(
+    interval: Interval,
+    services: List<ServiceEntry>,
+    odometer: Double?,
+    onEdit: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalYColors.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val history = services.filter { it.kind == interval.kind }.sortedByDescending { it.odometerKm }
+    val last = history.maxByOrNull { it.odometerKm }
+    val due = Maintenance.dueAtKm(interval.everyKm, last?.odometerKm)
+    val remaining = if (due != null && odometer != null) due - odometer else null
+    val overdue = remaining != null && remaining <= 0
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface,
+        contentColor = colors.text,
+        dragHandle = {
+            Box(
+                Modifier
+                    .padding(vertical = 12.dp)
+                    .width(36.dp)
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(colors.line),
+            )
+        },
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("MAINTENANCE ITEM", style = MicroLabel, color = colors.muted)
+            Text(interval.kind, fontSize = 24.sp, color = colors.text)
+            Text(
+                text = buildString {
+                    append("every %.0f km".format(interval.everyKm))
+                    append(" · ")
+                    append(
+                        when {
+                            history.isEmpty() -> "never logged"
+                            remaining == null -> "last at %.0f km".format(last?.odometerKm ?: 0.0)
+                            overdue -> "overdue by %.0f km".format(-remaining)
+                            else -> "in %.0f km".format(remaining)
+                        },
+                    )
+                },
+                style = MonoCode,
+                color = if (overdue) colors.accent else colors.muted,
+            )
+
+            HorizontalDivider(color = colors.line, thickness = 1.dp)
+
+            Text("HISTORY", style = MicroLabel, color = colors.muted)
+            if (history.isEmpty()) {
+                Text(
+                    "Nothing logged yet. DONE here records it at your current odometer.",
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = colors.muted,
+                )
+            } else {
+                history.forEach { entry ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(fmtDate(entry.time), fontSize = 13.sp, color = colors.text)
+                            Text(
+                                "%.1f km".format(entry.odometerKm),
+                                style = MonoCode,
+                                color = colors.muted,
+                            )
+                        }
+                        Text(
+                            text = "REMOVE",
+                            style = MicroLabel,
+                            color = colors.muted,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { Graph.dao.deleteService(entry.id) }
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
+                    HorizontalDivider(color = colors.line, thickness = 1.dp)
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(label = "LOG SERVICE", filled = true) {
+                    if (odometer == null) {
+                        Toast.makeText(
+                            context,
+                            "Add a fill-up so the app knows your odometer.",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    } else {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                Graph.dao.insertService(
+                                    ServiceEntry(
+                                        kind = interval.kind,
+                                        odometerKm = odometer,
+                                        time = System.currentTimeMillis(),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+                PillButton(label = "EDIT INTERVAL", onClick = onEdit)
+            }
         }
     }
 }

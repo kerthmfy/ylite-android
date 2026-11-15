@@ -4,12 +4,24 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import app.ylite.ui.YLiteApp
 import app.ylite.ui.YLiteTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/** Settings store a choice, not a phone state: "system" follows the device. */
+@Composable
+private fun themeIsDark(mode: String): Boolean = when (mode) {
+    "light" -> false
+    "dark" -> true
+    else -> isSystemInDarkTheme()
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -38,7 +50,8 @@ class MainActivity : ComponentActivity() {
 
         enableEdgeToEdge()
         setContent {
-            YLiteTheme {
+            val live by Graph.live.collectAsStateWithLifecycle()
+            YLiteTheme(darkTheme = themeIsDark(live.themeMode)) {
                 YLiteApp()
             }
         }

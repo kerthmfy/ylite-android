@@ -54,8 +54,27 @@ class Settings(context: Context) {
             prefs.edit().putString(KEY_CCU_NAME, value).apply()
         }
 
+    /** "system", "light" or "dark". */
+    var themeMode: String
+        get() = prefs.getString(KEY_THEME, "system") ?: "system"
+        set(value) {
+            prefs.edit().putString(KEY_THEME, value).apply()
+        }
+
+    /**
+     * When false, a fill-up needs an odometer reading. When true, litres and money are
+     * enough: the reading is optional and the economy maths simply skips those rows.
+     */
+    var odometerOptional: Boolean
+        get() = prefs.getBoolean(KEY_ODOMETER_OPTIONAL, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_ODOMETER_OPTIONAL, value).apply()
+        }
+
     private companion object {
         const val KEY_MODEL = "scooter_model"
+        const val KEY_THEME = "theme_mode"
+        const val KEY_ODOMETER_OPTIONAL = "odometer_optional"
         const val KEY_CCU_ADDRESS = "ccu_address"
         const val KEY_CCU_NAME = "ccu_name"
     }
