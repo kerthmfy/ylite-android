@@ -1,6 +1,6 @@
 # Y-Lite
 
-An unofficial replacement for the official Y-Connect app. It records rides, logs fuel, and keeps a scooter's history
+An unofficial alternative for the official Y-Connect app. It records rides, logs fuel, and keeps a scooter's history
 on your own phone.
 
 
