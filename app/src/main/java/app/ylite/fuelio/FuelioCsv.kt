@@ -1,6 +1,5 @@
 package app.ylite.fuelio
 
-import app.ylite.data.Fillup
 import java.text.ParsePosition
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -19,8 +18,23 @@ import java.util.TimeZone
  */
 object FuelioCsv {
 
+    /**
+     * One fill-up as Fuelio wrote it. A loose record rather than a Room entity: the
+     * station still has to be matched to (or created in) this app's own list.
+     */
+    data class ImportedFill(
+        val time: Long,
+        val odometerKm: Double,
+        val litres: Double,
+        val costTotal: Double?,
+        val isFull: Boolean,
+        val note: String?,
+        /** Fuelio's "City" column, which owners use for the station name. */
+        val stationName: String?,
+    )
+
     data class Result(
-        val fills: List<Fillup>,
+        val fills: List<ImportedFill>,
         val vehicle: String?,
         val skipped: Int,
         /** Set when units had to be converted, so the UI can say so. */
@@ -114,7 +128,7 @@ object FuelioCsv {
             addAll(fallbackPatterns)
         }
 
-        val fills = mutableListOf<Fillup>()
+        val fills = mutableListOf<ImportedFill>()
         var skipped = 0
         for (i in headerIndex + 1 until rows.size) {
             val row = rows[i]
@@ -135,16 +149,19 @@ object FuelioCsv {
             val pricePerUnit = if (priceCol >= 0) number(row.getOrNull(priceCol).orEmpty()) else null
             val costTotal = pricePerUnit?.let { it * fuel }
 
-            fills += Fillup(
+            // A bare "-" is what people type when a field is optional and they have
+            // nothing to say; it should not become a station called "-".
+            fun clean(raw: String?): String? =
+                raw?.trim()?.takeIf { it.isNotEmpty() && it != "-" && it != "—" }
+
+            fills += ImportedFill(
                 time = time,
                 odometerKm = odometerKm,
                 litres = litres,
                 costTotal = costTotal,
                 isFull = fullCol < 0 || row.getOrNull(fullCol).orEmpty().trim().let { it == "1" || it.equals("true", true) },
-                note = listOfNotNull(
-                    row.getOrNull(cityCol)?.takeIf { it.isNotBlank() },
-                    row.getOrNull(noteCol)?.takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { null },
+                note = clean(row.getOrNull(noteCol)),
+                stationName = clean(row.getOrNull(cityCol)),
             )
         }
 

@@ -3,6 +3,7 @@ package app.ylite.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,6 +51,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import app.ylite.data.FillAmounts
 import app.ylite.data.FillField
 import app.ylite.data.Fillup
+import app.ylite.data.Interval
 import app.ylite.data.Maintenance
 import app.ylite.data.ServiceEntry
 import app.ylite.data.Station
@@ -79,6 +81,7 @@ fun ScooterScreen(live: LiveState) {
     val fillups by remember { Graph.dao.fillups() }.collectAsStateWithLifecycle(initialValue = emptyList())
     val services by remember { Graph.dao.services() }.collectAsStateWithLifecycle(initialValue = emptyList())
     val stations by remember { Graph.dao.stations() }.collectAsStateWithLifecycle(initialValue = emptyList())
+    val intervals by remember { Graph.dao.intervals() }.collectAsStateWithLifecycle(initialValue = emptyList())
     val visits = remember(fillups) {
         fillups.mapNotNull { it.stationId }.groupingBy { it }.eachCount()
     }
@@ -86,6 +89,8 @@ fun ScooterScreen(live: LiveState) {
     var parked by remember { mutableStateOf<ParkedFix?>(null) }
     var addOpen by remember { mutableStateOf(false) }
     var exportLabel by remember { mutableStateOf<String?>(null) }
+    var addingInterval by remember { mutableStateOf(false) }
+    var editingInterval by remember { mutableStateOf<Interval?>(null) }
 
     // A ride that ends is also a scooter that just parked, so re-read after it.
     LaunchedEffect(live.recording, live.gpsPoints) {
@@ -110,13 +115,15 @@ fun ScooterScreen(live: LiveState) {
                         ?.bufferedReader()
                         ?.use { reader -> reader.readText() }
                         ?.let { FuelioCsv.parse(it) }
-                }.getOrNull()
+                }.onFailure { Log.w("ylite-import", "could not read $uri", it) }.getOrNull()
             }
 
             if (parsed == null) {
+                Log.w("ylite-import", "nothing parsed from $uri")
                 Toast.makeText(context, "Could not read that file.", Toast.LENGTH_LONG).show()
                 return@launch
             }
+            Log.i("ylite-import", "parsed ${parsed.fills.size} rows, ${parsed.skipped} skipped, ${parsed.conversion}")
             if (parsed.fills.isEmpty()) {
                 val why = parsed.conversion?.takeIf { it.startsWith("No ") } ?: "No fill-up rows found"
                 Toast.makeText(context, why, Toast.LENGTH_LONG).show()
@@ -126,9 +133,43 @@ fun ScooterScreen(live: LiveState) {
             // Importing twice should not double the history: odometer is the key.
             val known = fillups.map { "%.1f".format(it.odometerKm) }.toSet()
             val fresh = parsed.fills.filterNot { "%.1f".format(it.odometerKm) in known }
-            withContext(Dispatchers.IO) { fresh.forEach { Graph.dao.insertFillup(it) } }
 
-            val parts = mutableListOf("Imported ${fresh.size} fill-ups")
+            // Fuelio keeps the station in its "City" column, so the import builds the
+            // station list as it goes: match by name, create what is missing, and star
+            // what came from your own history. Visit counts then fall out of the links.
+            val (imported, newStations) = withContext(Dispatchers.IO) {
+                val byName = Graph.dao.stations().first()
+                    .associateBy { it.name.trim().lowercase() }
+                    .toMutableMap()
+                var created = 0
+                for (fill in fresh) {
+                    val name = fill.stationName?.trim()?.takeIf { it.isNotEmpty() }
+                    var station = name?.let { byName[it.lowercase()] }
+                    if (station == null && name != null) {
+                        val id = Graph.dao.insertStation(Station(name = name, favorite = true))
+                        station = Station(id = id, name = name, favorite = true)
+                        byName[name.lowercase()] = station
+                        created++
+                    }
+                    Graph.dao.insertFillup(
+                        Fillup(
+                            time = fill.time,
+                            odometerKm = fill.odometerKm,
+                            litres = fill.litres,
+                            costTotal = fill.costTotal,
+                            isFull = fill.isFull,
+                            note = fill.note,
+                            stationId = station?.id,
+                        ),
+                    )
+                }
+                fresh.size to created
+            }
+
+            Log.i("ylite-import", "inserted $imported of ${fresh.size}, ${newStations} new station(s)")
+
+            val parts = mutableListOf("Imported $imported fill-ups")
+            if (newStations > 0) parts += "$newStations station(s)"
             val duplicates = parsed.fills.size - fresh.size
             if (duplicates > 0) parts += "$duplicates already here"
             if (parsed.skipped > 0) parts += "${parsed.skipped} unreadable"
@@ -230,9 +271,9 @@ fun ScooterScreen(live: LiveState) {
                     color = colors.muted,
                 )
             }
-            Maintenance.intervals.forEach { interval ->
+            intervals.forEach { interval ->
                 val last = services.filter { it.kind == interval.kind }.maxByOrNull { it.odometerKm }
-                val due = Maintenance.dueAtKm(interval, last?.odometerKm)
+                val due = Maintenance.dueAtKm(interval.everyKm, last?.odometerKm)
                 val remaining = if (due != null && odometer != null) due - odometer else null
                 val overdue = remaining != null && remaining <= 0
 
@@ -240,7 +281,13 @@ fun ScooterScreen(live: LiveState) {
                     modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { editingInterval = interval }
+                            .padding(vertical = 2.dp),
+                    ) {
                         Text(interval.kind, fontSize = 14.sp, color = colors.text)
                         Spacer(Modifier.height(2.dp))
                         Text(
@@ -287,9 +334,11 @@ fun ScooterScreen(live: LiveState) {
                 HorizontalDivider(color = colors.line, thickness = 1.dp)
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
+            PillButton(label = "ADD ITEM") { addingInterval = true }
+            Spacer(Modifier.height(8.dp))
             Text(
-                "Intervals are cautious round numbers for city riding, not a Yamaha schedule. Check your manual.",
+                "Tap a job to rename it or change its interval — the seeded numbers are cautious city figures, not a Yamaha schedule.",
                 fontSize = 11.sp,
                 lineHeight = 17.sp,
                 color = colors.muted,
@@ -360,6 +409,12 @@ fun ScooterScreen(live: LiveState) {
             visits = visits,
             onDismiss = { addOpen = false },
         )
+    }
+    if (addingInterval) {
+        IntervalSheet(existing = null, onDismiss = { addingInterval = false })
+    }
+    editingInterval?.let { interval ->
+        IntervalSheet(existing = interval, onDismiss = { editingInterval = null })
     }
 }
 
@@ -567,8 +622,8 @@ private fun FillupSheet(
                     Text(
                         text = when {
                             selected == null -> "Pick one you have used before, or add it"
-                            selected.favorite -> "favourite · ${visits[selected.id] ?: 0} visits"
-                            else -> "${visits[selected.id] ?: 0} visits"
+                            selected.favorite -> "favourite · ${visitLabel(visits[selected.id] ?: 0)}"
+                            else -> visitLabel(visits[selected.id] ?: 0)
                         },
                         style = MonoCode,
                         color = colors.muted,
@@ -619,7 +674,7 @@ private fun FillupSheet(
                                 )
                                 val count = visits[station.id] ?: 0
                                 if (count > 0) {
-                                    Text("$count visits", style = MonoCode, color = colors.muted)
+                                    Text(visitLabel(count), style = MonoCode, color = colors.muted)
                                 }
                             }
                             Text(
@@ -738,6 +793,108 @@ private fun NumberField(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IntervalSheet(existing: Interval?, onDismiss: () -> Unit) {
+    val colors = LocalYColors.current
+    val scope = rememberCoroutineScope()
+    var kind by rememberSaveable { mutableStateOf(existing?.kind.orEmpty()) }
+    var km by rememberSaveable {
+        mutableStateOf(existing?.everyKm?.let { "%.0f".format(it) }.orEmpty())
+    }
+    val everyKm = km.toNumberOrNull()
+    val valid = kind.isNotBlank() && everyKm != null && everyKm > 0.0
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface,
+        contentColor = colors.text,
+        dragHandle = {
+            Box(
+                Modifier
+                    .padding(vertical = 12.dp)
+                    .width(36.dp)
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(colors.line),
+            )
+        },
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = if (existing == null) "NEW MAINTENANCE ITEM" else "EDIT MAINTENANCE ITEM",
+                style = MicroLabel,
+                color = colors.muted,
+            )
+            Text(
+                text = "Name the job and how many kilometres between services. Your manual wins over the seeded numbers.",
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                color = colors.muted,
+            )
+
+            NumberField(
+                label = "NAME",
+                value = kind,
+                placeholder = "Chain lube",
+            ) { kind = it }
+            NumberField(
+                label = "EVERY (KM)",
+                value = km,
+                placeholder = "500",
+            ) { km = it }
+
+            Spacer(Modifier.height(2.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PillButton(
+                    label = "SAVE",
+                    filled = true,
+                    enabled = valid,
+                    onClick = {
+                        val name = kind.trim()
+                        val value = everyKm ?: return@PillButton
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                if (existing == null) {
+                                    Graph.dao.insertInterval(Interval(kind = name, everyKm = value))
+                                } else {
+                                    Graph.dao.updateInterval(
+                                        existing.copy(kind = name, everyKm = value),
+                                    )
+                                    // History is stored by name, so a rename has to follow it.
+                                    if (name != existing.kind) {
+                                        Graph.dao.renameServiceKind(existing.kind, name)
+                                    }
+                                }
+                            }
+                            onDismiss()
+                        }
+                    },
+                )
+
+                if (existing != null) {
+                    PillButton(label = "DELETE") {
+                        scope.launch {
+                            withContext(Dispatchers.IO) { Graph.dao.deleteInterval(existing.id) }
+                            onDismiss()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** "1 visit", not "1 visits" — the count is nearly always small. */
+private fun visitLabel(count: Int): String = if (count == 1) "1 visit" else "$count visits"
 
 /** Keeps a half-typed receipt alive across a rotation. */
 private val fillAmountsSaver = listSaver<FillAmounts, String>(
