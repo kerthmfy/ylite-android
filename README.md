@@ -22,14 +22,18 @@ Debug → **CAPTURE FRAMES** stores notifications without starting a ride, and
 price per litre and total (the third is computed, the same way Fuelio does it).
 Consumption is calculated across full tanks only, so a top-up does not invent a tank.
 
-**Maintenance.** Oil, CVT belt and rollers, air filter, spark plug and brake fluid
-counters, all measured from your odometer with overdue warnings.
+**Maintenance.** Oil, CVT belt and rollers, air filter, spark plug and brake fluid to
+start with — but the list is yours: add a job, change how many kilometres it comes
+round, rename it, delete it. All of it is measured from your odometer, with overdue
+warnings and a DONE button that logs the service at the current reading.
 
 **Where you parked.** The last fix of your last ride, with a button into your maps app.
 
-**Import and export.** Fuelio's backup CSV imports directly. Everything exports as one
-zip: GPX per ride, raw CCU frames per ride, and CSV logs for rides, fill-ups, services
-and stations.
+**Import and export.** Fuelio's backup CSV imports directly, and the station in its
+"City" column becomes a station here: names you have not used before are created and
+starred as favourites, so past stations and their visit counts appear without retyping.
+Everything exports as one zip: GPX per ride, raw CCU frames per ride, and CSV logs for
+rides, fill-ups, services and stations.
 
 ## Read-only, deliberately
 
@@ -76,7 +80,8 @@ keep the official app closed while Y-Lite is connected.
 ## Data
 
 The database `ylite.db` in the app's private storage, currently schema **v5** with
-hand-written migrations covering every version since v1, so upgrades never drop rides.
+hand-written migrations covering every version since v1, so upgrades never drop rides
+or fill-ups.
 
 Exports land in `Android/data/app.ylite/files/exports/` and are shared through the
 system sheet.

@@ -56,6 +56,39 @@ class FuelioCsvTest {
     }
 
     @Test
+    fun readsTheStationFromTheCityColumnAndKeepsNotesSeparate() {
+        val csv = """
+            "## Log"
+            "Data","Odo (km)","Fuel (l)","Full","City (optional)","Notes (optional)"
+            "2026-04-01","1000","3.0","1","Petron","first tank"
+            "2026-04-09","1100","2.0","0","Shell","top-up"
+        """.trimIndent()
+
+        val fills = FuelioCsv.parse(csv).fills
+
+        // "City" is where Fuelio owners put the station name.
+        assertEquals("Petron", fills[0].stationName)
+        assertEquals("Shell", fills[1].stationName)
+        // The note stays in the note; it used to be glued onto the station.
+        assertEquals("first tank", fills[0].note)
+        assertEquals("top-up", fills[1].note)
+    }
+
+    @Test
+    fun treatsADashAsNoStationRatherThanAStationCalledDash() {
+        val plain = """
+            "## Log"
+            "Data","Odo (km)","Fuel (l)","Full","City (optional)","Notes (optional)"
+            "2026-04-01","1000","3.0","1","-","-"
+        """.trimIndent()
+
+        val fill = FuelioCsv.parse(plain).fills.first()
+
+        assertEquals(null, fill.stationName)
+        assertEquals(null, fill.note)
+    }
+
+    @Test
     fun convertsMilesAndGallonsWhenTheHeaderSaysSo() {
         val imperial = """
             "## Vehicle",,,,,,,,,

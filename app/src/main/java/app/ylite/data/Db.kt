@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
+import androidx.room.Update
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -101,6 +102,17 @@ data class ServiceEntry(
     val time: Long,
 )
 
+/**
+ * One maintenance job and how often it comes round. Editable, because every owner
+ * and every manual disagrees about the numbers.
+ */
+@Entity(tableName = "intervals")
+data class Interval(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val kind: String,
+    val everyKm: Double,
+)
+
 /** SQLite has no byte type, so raw frames are stored as hex text. */
 class Converters {
     @TypeConverter
@@ -166,6 +178,10 @@ interface YDao {
     @Query("SELECT * FROM services ORDER BY odometerKm ASC")
     fun services(): Flow<List<ServiceEntry>>
 
+    /** Keeps history attached when a job is renamed. */
+    @Query("UPDATE services SET kind = :to WHERE kind = :from")
+    suspend fun renameServiceKind(from: String, to: String)
+
     @Insert
     suspend fun insertStation(station: Station): Long
 
@@ -174,6 +190,18 @@ interface YDao {
 
     @Query("SELECT * FROM stations ORDER BY favorite DESC, name ASC")
     fun stations(): Flow<List<Station>>
+
+    @Insert
+    suspend fun insertInterval(interval: Interval): Long
+
+    @Update
+    suspend fun updateInterval(interval: Interval)
+
+    @Query("DELETE FROM intervals WHERE id = :id")
+    suspend fun deleteInterval(id: Long)
+
+    @Query("SELECT * FROM intervals ORDER BY kind ASC")
+    fun intervals(): Flow<List<Interval>>
 }
 
 @Database(
@@ -184,8 +212,9 @@ interface YDao {
         Fillup::class,
         ServiceEntry::class,
         Station::class,
+        Interval::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -247,6 +276,26 @@ abstract class AppDb : RoomDatabase() {
                         "`lon` REAL)",
                 )
                 db.execSQL("ALTER TABLE fillups ADD COLUMN stationId INTEGER")
+            }
+        }
+
+        /** v6 makes the maintenance intervals editable rows instead of a fixed list. */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `intervals` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`everyKm` REAL NOT NULL)",
+                )
+                // Start from the same list the app used to hard-code, so nothing
+                // disappears from the screen after upgrading.
+                for (interval in Maintenance.defaults) {
+                    db.execSQL(
+                        "INSERT INTO intervals (kind, everyKm) VALUES (?, ?)",
+                        arrayOf<Any>(interval.kind, interval.everyKm),
+                    )
+                }
             }
         }
     }

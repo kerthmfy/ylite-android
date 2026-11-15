@@ -2,9 +2,12 @@ package app.ylite
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
 import app.ylite.ble.BleClient
 import app.ylite.data.AppDb
 import app.ylite.data.FrameLine
+import app.ylite.data.Maintenance
 import app.ylite.data.Settings
 import app.ylite.data.Telemetry
 import app.ylite.data.YDao
@@ -67,6 +70,20 @@ object Graph {
                 AppDb.MIGRATION_2_3,
                 AppDb.MIGRATION_3_4,
                 AppDb.MIGRATION_4_5,
+                AppDb.MIGRATION_5_6,
+            )
+            // A brand new database never runs a migration, so it seeds here instead.
+            .addCallback(
+                object : RoomDatabase.Callback() {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        for (interval in Maintenance.defaults) {
+                            db.execSQL(
+                                "INSERT INTO intervals (kind, everyKm) VALUES (?, ?)",
+                                arrayOf<Any>(interval.kind, interval.everyKm),
+                            )
+                        }
+                    }
+                },
             )
             .build()
     }
