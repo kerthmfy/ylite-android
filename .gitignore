@@ -9,3 +9,9 @@ local.properties
 .cxx/
 .kotlin/
 dist/
+
+# BLE captures: contain the CCU serial, the handshake token and other devices' traffic
+ylite_capture/
+btsnoop_hci.log
+*.btsnoop
+ccu.tsv

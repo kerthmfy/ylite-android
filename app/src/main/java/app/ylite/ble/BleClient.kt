@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -52,6 +53,11 @@ private const val CONNECT_WAIT_MS = 8_000L
 private const val SILENCE_MS = 10_000L
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+/** Official app: ack1 came 199 ms after handshake #1, ack2 481 ms after #2. */
+private const val ACK_TIMEOUT_MS = 1_500L
+private const val HEARTBEAT_PERIOD_MS = 1_000L
+private const val HEARTBEAT_B_DELAY_MS = 100L
+
 data class ScanHit(
     val address: String,
     val name: String?,
@@ -74,15 +80,19 @@ data class BleFrameEvent(
 )
 
 /**
- * Read-only GATT client.
+ * GATT client for the Yamaha CCU.
  *
  * Android allows one GATT operation at a time per device, so every operation goes
  * through [ops] and is executed by a single worker coroutine. If an operation gets
  * no answer within [STALL_MS] the connection is torn down and rebuilt — a stalled
  * GATT stack never recovers on its own.
  *
- * Nothing here writes a characteristic value. The only write is the standard
- * notification-enable descriptor (CCCD).
+ * Connect flow (see [CcuProtocol]): discover → subscribe 6e400003 (CCCD) → MTU 247 →
+ * handshake #1 → ack1 → handshake #2 → ack2 → stream, with heartbeat A/B every second.
+ * The CCU hangs up ~2 s after connect if it gets no handshake.
+ *
+ * The only characteristic writes are the handshake and heartbeat frames seen from the
+ * official app. Nothing else is ever sent.
  */
 class BleClient(private val context: Context) {
 
@@ -123,6 +133,25 @@ class BleClient(private val context: Context) {
     /** Bumped on every drop, so a connect attempt knows the stack already gave up. */
     @Volatile
     private var dropSeq = 0
+
+    /** Handshake and heartbeat for the current link; cancelled on every drop. */
+    @Volatile
+    private var handshakeJob: Job? = null
+
+    @Volatile
+    private var heartbeatJob: Job? = null
+
+    /** Ack payloads (00 / 01) from the CCU, fed by onCharacteristicChanged. New per link. */
+    @Volatile
+    private var acks = Channel<Int>(Channel.UNLIMITED)
+
+    /** Frames on this link whose checksum did not add up (usually means the MTU did not apply). */
+    @Volatile
+    private var badFramesOnLink = 0
+
+    /** Debug experiment (handover test plan step 4): skip heartbeats until this time. */
+    @Volatile
+    private var heartbeatPausedUntil = 0L
 
     /** One automatic attempt per process: an explicit DISCONNECT stays disconnected. */
     private var autoConnectDone = false
@@ -307,6 +336,7 @@ class BleClient(private val context: Context) {
         reconnectJob?.cancel()
         logLink("disconnect requested")
         unregisterBondReceiver()
+        stopLinkJobs()
         scope.launch {
             val g = gatt
             runCatching { g?.disconnect() }
@@ -341,13 +371,32 @@ class BleClient(private val context: Context) {
     }
 
     private fun closeGatt(g: BluetoothGatt) {
+        stopLinkJobs()
         runCatching { g.close() }
         if (gatt === g) gatt = null
+    }
+
+    /** Heartbeats must never outlive the link they were sent on. */
+    private fun stopLinkJobs() {
+        handshakeJob?.cancel()
+        handshakeJob = null
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    /**
+     * Debug: stop sending heartbeats for [ms], to find out whether the CCU needs them
+     * (handover test plan step 4). The link log shows whether the link survives.
+     */
+    fun pauseHeartbeat(ms: Long = 10_000L) {
+        heartbeatPausedUntil = System.currentTimeMillis() + ms
+        logLink("heartbeat paused for ${ms / 1000}s (experiment)")
     }
 
     /** Drop the connection, cancel queued work, and try again if a connection is still wanted. */
     private fun teardown(reason: String) {
         logLink("teardown: $reason")
+        stopLinkJobs()
         Graph.setLive { it.copy(connected = false, status = reason) }
         val g = gatt
         runCatching { g?.disconnect() }
@@ -465,6 +514,7 @@ class BleClient(private val context: Context) {
                     connectAttempts = 0
                     connectedAt = System.currentTimeMillis()
                     framesOnLink = 0
+                    badFramesOnLink = 0
                     Graph.setLive {
                         it.copy(
                             connected = true,
@@ -511,6 +561,18 @@ class BleClient(private val context: Context) {
             current?.onDescriptorWrite(g, descriptor, status)
         }
 
+        override fun onCharacteristicWrite(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            current?.onWrite(g, characteristic, status)
+        }
+
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            current?.onMtu(g, mtu, status)
+        }
+
         @Suppress("DEPRECATION")
         @SuppressLint("MissingPermission")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -525,6 +587,20 @@ class BleClient(private val context: Context) {
                 data = value,
             )
             _frames.tryEmit(event)
+
+            // One frame per notification; a bad checksum almost always means a truncated
+            // frame, i.e. the MTU did not apply.
+            if (characteristic.uuid == CcuProtocol.NUS_TX && value.isNotEmpty()) {
+                if (!CcuProtocol.checksumOk(value)) {
+                    badFramesOnLink++
+                    if (badFramesOnLink <= 5) {
+                        logLink("bad checksum on ${value.size} B frame (type %02x)".format(value[0].toInt() and 0xff))
+                    }
+                } else if ((value[0].toInt() and 0xff) == CcuProtocol.T_ACK) {
+                    val p = CcuProtocol.ackPayload(value)
+                    if (p != null) acks.trySend(p) else logLink("unrecognised 5a frame: ${value.hex()}")
+                }
+            }
 
             val decoded = runCatching {
                 ProtocolDecoder.decode(
@@ -585,9 +661,10 @@ class BleClient(private val context: Context) {
             return
         }
 
+        // No characteristic reads: the official app does none, and the CCU only gives a
+        // client ~2 s to send its handshake. Subscribe, then go straight to the handshake.
         for (service in g.services) {
             for (c in service.characteristics) {
-                if (c.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) enqueue(ReadOp(g, c))
                 if (c.properties and streamMask != 0) enqueue(SubscribeOp(g, c))
             }
         }
@@ -599,6 +676,7 @@ class BleClient(private val context: Context) {
         Graph.setLive {
             it.copy(status = "Connected — $readable readable, $streams notify channel(s)")
         }
+        startHandshake(g)
         watchSilence(g)
     }
 
@@ -615,6 +693,98 @@ class BleClient(private val context: Context) {
             logLink("no notifications in ${SILENCE_MS / 1000}s (subscribed, link still up)")
             Graph.setLive {
                 it.copy(status = "Subscribed, but the CCU is silent — see the link log")
+            }
+        }
+    }
+
+    /**
+     * MTU → handshake #1 → ack → handshake #2 → ack → heartbeat. Ack-gated, like the
+     * official app (it sent #2 13 ms after ack1). Runs beside the op worker, never in it,
+     * because it waits for ops the worker has yet to run.
+     */
+    private fun startHandshake(g: BluetoothGatt) {
+        val rx = g.getService(CcuProtocol.NUS_SERVICE)?.getCharacteristic(CcuProtocol.NUS_RX)
+        if (rx == null) {
+            logLink("no Nordic UART RX characteristic — not a CCU? staying subscribe-only")
+            return
+        }
+        val hs1 = CcuProtocol.parseHex(Graph.settings.ccuHandshake1)
+        val hs2 = CcuProtocol.parseHex(Graph.settings.ccuHandshake2)
+        val problem = CcuProtocol.validateHandshake(hs1, 0)?.let { "handshake #1: $it" }
+            ?: CcuProtocol.validateHandshake(hs2, 1)?.let { "handshake #2: $it" }
+        if (problem != null || hs1 == null || hs2 == null) {
+            logLink("no usable handshake set ($problem) — the CCU will hang up; add it under Scooter › Settings")
+            Graph.setLive { it.copy(status = "No CCU handshake set — see Scooter › Settings") }
+            return
+        }
+
+        handshakeJob?.cancel()
+        heartbeatJob?.cancel()
+        val ackChannel = Channel<Int>(Channel.UNLIMITED)
+        acks = ackChannel
+
+        handshakeJob = scope.launch {
+            // Queued behind the CCCD write, so this also means "subscribed".
+            val mtuDone = CompletableDeferred<Int?>()
+            enqueue(MtuOp(g, CcuProtocol.MTU, mtuDone))
+            val mtu = withTimeoutOrNull(STALL_MS * 3) { mtuDone.await() }
+            if (gatt !== g) return@launch
+            when {
+                mtu == null -> logLink("MTU request got no answer — sending handshake anyway")
+                mtu < 80 -> logLink("MTU $mtu — too small for 76 B frames, expect bad checksums")
+                else -> logLink("MTU $mtu")
+            }
+
+            enqueue(WriteOp(g, rx, hs1, "handshake #1"))
+            val ack1 = withTimeoutOrNull(ACK_TIMEOUT_MS) { ackChannel.receive() }
+            if (gatt !== g) return@launch
+            if (ack1 == null) {
+                teardown("no ack to handshake #1 within ${ACK_TIMEOUT_MS} ms")
+                return@launch
+            }
+
+            if (ack1 == 0) {
+                logLink("ack1 (00) — sending handshake #2")
+                enqueue(WriteOp(g, rx, hs2, "handshake #2"))
+                val ack2 = withTimeoutOrNull(ACK_TIMEOUT_MS) { ackChannel.receive() }
+                if (gatt !== g) return@launch
+                if (ack2 == null) {
+                    teardown("no ack to handshake #2 within ${ACK_TIMEOUT_MS} ms")
+                    return@launch
+                }
+                logLink("ack2 (%02x) — handshake done".format(ack2))
+            } else {
+                // Seen on the official app's reconnects, which then sent no #2 and got no
+                // stream. Meaning unknown; try streaming and let the link log tell.
+                logLink("ack1 payload %02x (UNTESTED) — skipping handshake #2".format(ack1))
+            }
+
+            Graph.setLive { it.copy(status = "Handshake done — waiting for frames") }
+            startHeartbeat(g, rx)
+        }
+    }
+
+    /** Heartbeat A, then B 100 ms later, every second. seq runs A=0, B=1, A=2… per link. */
+    private fun startHeartbeat(g: BluetoothGatt, rx: BluetoothGattCharacteristic) {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            var seq = 0
+            var wasPaused = false
+            while (isActive && gatt === g) {
+                val paused = System.currentTimeMillis() < heartbeatPausedUntil
+                if (wasPaused && !paused) logLink("heartbeat resumed")
+                wasPaused = paused
+                if (!paused) {
+                    enqueue(WriteOp(g, rx, CcuProtocol.heartbeatA(java.util.Calendar.getInstance(), seq), null))
+                    seq = (seq + 1) and 0xff
+                    delay(HEARTBEAT_B_DELAY_MS)
+                    if (!isActive || gatt !== g) break
+                    enqueue(WriteOp(g, rx, CcuProtocol.heartbeatB(seq), null))
+                    seq = (seq + 1) and 0xff
+                    delay(HEARTBEAT_PERIOD_MS - HEARTBEAT_B_DELAY_MS)
+                } else {
+                    delay(HEARTBEAT_PERIOD_MS)
+                }
             }
         }
     }
@@ -747,6 +917,87 @@ private abstract class GattOp(val label: String) {
     open fun onDiscover(g: BluetoothGatt, status: Int) {}
     open fun onRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {}
     open fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {}
+    open fun onWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {}
+    open fun onMtu(g: BluetoothGatt, mtu: Int, status: Int) {}
+}
+
+/** Ask for a bigger MTU; [result] gets the negotiated value, or null if the request failed. */
+private class MtuOp(
+    private val gatt: BluetoothGatt,
+    private val mtu: Int,
+    private val result: CompletableDeferred<Int?>,
+) : GattOp("requestMtu $mtu") {
+    private val done = CompletableDeferred<Unit>()
+
+    @SuppressLint("MissingPermission")
+    override suspend fun run(): Boolean {
+        if (!gatt.requestMtu(mtu)) {
+            // Not fatal here: the stack may already be at a larger MTU. The caller logs it.
+            result.complete(null)
+            return true
+        }
+        done.await()
+        return true
+    }
+
+    override fun abort() {
+        result.complete(null)
+        done.complete(Unit)
+    }
+
+    override fun onMtu(g: BluetoothGatt, mtu: Int, status: Int) {
+        result.complete(if (status == BluetoothGatt.GATT_SUCCESS) mtu else null)
+        done.complete(Unit)
+    }
+}
+
+/**
+ * One write-without-response to the CCU's RX characteristic. Android still reports
+ * completion through onCharacteristicWrite, which is what keeps writes from piling up.
+ * [label] is logged; pass null for high-rate frames. Bytes are never logged — the
+ * handshake carries the CCU serial and token.
+ */
+private class WriteOp(
+    private val gatt: BluetoothGatt,
+    private val characteristic: BluetoothGattCharacteristic,
+    private val value: ByteArray,
+    private val logLabel: String?,
+) : GattOp("write ${logLabel ?: "heartbeat"}") {
+    private val done = CompletableDeferred<Boolean>()
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission")
+    override suspend fun run(): Boolean {
+        val type = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeCharacteristic(characteristic, value, type) == BluetoothStatusCodes.SUCCESS
+        } else {
+            characteristic.writeType = type
+            characteristic.value = value
+            gatt.writeCharacteristic(characteristic)
+        }
+        if (!started) {
+            report("write rejected by the stack")
+            return false
+        }
+        val ok = done.await()
+        if (!ok) report("write failed")
+        else logLabel?.let { report("sent (${value.size} B)") }
+        return true
+    }
+
+    override fun abort() {
+        done.complete(false)
+    }
+
+    override fun onWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        done.complete(status == BluetoothGatt.GATT_SUCCESS)
+    }
+
+    private fun report(outcome: String) {
+        val line = "→ ${logLabel ?: "heartbeat"}: $outcome"
+        Graph.setLive { it.copy(linkLog = (listOf(line) + it.linkLog).take(60)) }
+    }
 }
 
 private class DiscoverOp(val gatt: BluetoothGatt) : GattOp("discoverServices") {
@@ -764,39 +1015,6 @@ private class DiscoverOp(val gatt: BluetoothGatt) : GattOp("discoverServices") {
 
     override fun onDiscover(g: BluetoothGatt, status: Int) {
         done.complete(status == BluetoothGatt.GATT_SUCCESS)
-    }
-}
-
-private class ReadOp(
-    private val gatt: BluetoothGatt,
-    private val characteristic: BluetoothGattCharacteristic,
-) : GattOp("read ${shortUuid(characteristic.uuid)}") {
-
-    private val done = CompletableDeferred<Unit>()
-
-    @Suppress("DEPRECATION")
-    @SuppressLint("MissingPermission")
-    override suspend fun run(): Boolean {
-        if (!gatt.readCharacteristic(characteristic)) return false
-        done.await()
-        return true
-    }
-
-    override fun abort() {
-        done.complete(Unit)
-    }
-
-    override fun onRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-        // A read that silently yields nothing is the difference between "the CCU has
-        // no model string" and "the read failed", so both land in the link log.
-        val value = characteristic.value
-        val line = if (status == BluetoothGatt.GATT_SUCCESS) {
-            "read ${shortUuid(characteristic.uuid)} = " + (value?.hex() ?: "(empty)")
-        } else {
-            "read ${shortUuid(characteristic.uuid)} failed (status $status)"
-        }
-        Graph.setLive { it.copy(linkLog = (listOf(line) + it.linkLog).take(30)) }
-        done.complete(Unit)
     }
 }
 

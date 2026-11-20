@@ -53,11 +53,18 @@ their visits together.
 Everything exports as one zip: GPX per ride, raw CCU frames per ride, and CSV logs for
 rides, fill-ups, services and stations.
 
-## Read-only, deliberately
+## What it sends to the scooter
 
-The app never writes a characteristic value to the scooter. The only GATT write it ever
-performs is enabling the notification descriptor (`2902`) on Nordic UART
-`6e400003`, which is how a client subscribes to data the CCU already sends.
+Y-Lite sends only the handshake and heartbeat frames seen from the official app:
+
+- the two 60-byte handshake frames, once per connection, right after subscribing to
+  Nordic UART `6e400003` and raising the MTU. The CCU hangs up ~2 s after connect without them.
+- heartbeat A and B once per second while connected (they carry the phone's clock).
+
+Nothing else is ever written, and no other opcodes are probed. The handshake frames contain
+the CCU serial and a per-pairing token, so they are not in this repo: paste them under
+**Scooter › CCU handshake** from your own capture of the official app. They are stored only in
+the app's settings on the phone.
 
 ## Build
 

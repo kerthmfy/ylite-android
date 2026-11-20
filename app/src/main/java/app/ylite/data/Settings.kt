@@ -54,6 +54,24 @@ class Settings(context: Context) {
             prefs.edit().putString(KEY_CCU_NAME, value).apply()
         }
 
+    /**
+     * The two 60-byte handshake frames the official app sends after subscribing, as hex.
+     * They carry the CCU serial and a per-pairing token, so they live only on the phone —
+     * never in source, never in exports. Null means "not set": the link then stays
+     * subscribe-only and the CCU drops it after ~2 s.
+     */
+    var ccuHandshake1: String?
+        get() = prefs.getString(KEY_HS1, null)
+        set(value) {
+            prefs.edit().putString(KEY_HS1, value).apply()
+        }
+
+    var ccuHandshake2: String?
+        get() = prefs.getString(KEY_HS2, null)
+        set(value) {
+            prefs.edit().putString(KEY_HS2, value).apply()
+        }
+
     /** "system", "light" or "dark". */
     var themeMode: String
         get() = prefs.getString(KEY_THEME, "system") ?: "system"
@@ -77,5 +95,7 @@ class Settings(context: Context) {
         const val KEY_ODOMETER_OPTIONAL = "odometer_optional"
         const val KEY_CCU_ADDRESS = "ccu_address"
         const val KEY_CCU_NAME = "ccu_name"
+        const val KEY_HS1 = "ccu_handshake_1"
+        const val KEY_HS2 = "ccu_handshake_2"
     }
 }
