@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.ylite.Graph
 import app.ylite.LiveState
+import app.ylite.ble.CcuProtocol
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import app.ylite.data.FillAmounts
@@ -429,6 +430,10 @@ fun ScooterScreen(live: LiveState) {
                     modifier = Modifier.padding(start = 12.dp),
                 )
             }
+        }
+
+        Section("CCU HANDSHAKE") {
+            HandshakeSettings()
         }
 
         Section("DATA") {
@@ -1008,6 +1013,48 @@ private fun FillupSheet(
                     }
                 },
             )
+        }
+    }
+}
+
+/**
+ * The two handshake frames from your own HCI capture of the official app (see the BLE
+ * handover). They hold the CCU serial and a pairing token, so they stay on this phone:
+ * SharedPreferences only, never in source or exports.
+ */
+@Composable
+private fun HandshakeSettings() {
+    val colors = LocalYColors.current
+    val context = LocalContext.current
+    var hs1 by remember { mutableStateOf(Graph.settings.ccuHandshake1.orEmpty()) }
+    var hs2 by remember { mutableStateOf(Graph.settings.ccuHandshake2.orEmpty()) }
+
+    fun check(text: String, index: Int): String =
+        if (text.isBlank()) "not set"
+        else CcuProtocol.validateHandshake(CcuProtocol.parseHex(text), index) ?: "OK"
+
+    Text(
+        "Paste the two 60-byte frames the official app writes after subscribing (hex, from your own capture). Without them the CCU hangs up after ~2 s.",
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        color = colors.muted,
+    )
+    Spacer(Modifier.height(10.dp))
+    NumberField(label = "HANDSHAKE #1 · ${check(hs1, 0)}", value = hs1, placeholder = "aa017f0035…") { hs1 = it }
+    Spacer(Modifier.height(10.dp))
+    NumberField(label = "HANDSHAKE #2 · ${check(hs2, 1)}", value = hs2, placeholder = "aa017f0035…") { hs2 = it }
+    Spacer(Modifier.height(10.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        PillButton(label = "SAVE", filled = true, enabled = check(hs1, 0) == "OK" && check(hs2, 1) == "OK") {
+            Graph.settings.ccuHandshake1 = CcuProtocol.parseHex(hs1)?.joinToString("") { "%02x".format(it) }
+            Graph.settings.ccuHandshake2 = CcuProtocol.parseHex(hs2)?.joinToString("") { "%02x".format(it) }
+            Toast.makeText(context, "Handshake saved — used on the next connect", Toast.LENGTH_SHORT).show()
+        }
+        PillButton(label = "CLEAR") {
+            hs1 = ""
+            hs2 = ""
+            Graph.settings.ccuHandshake1 = null
+            Graph.settings.ccuHandshake2 = null
         }
     }
 }

@@ -726,7 +726,7 @@ private fun DeviceSheet(live: LiveState, hits: List<ScanHit>, onDismiss: () -> U
                 color = colors.muted,
             )
             Text(
-                "Read-only: Y-Lite never writes to the scooter. The CCU only powers up while the ignition is on, so scan with the scooter switched on and parked.",
+                "Y-Lite sends the scooter only the handshake and heartbeat seen from the official app. The CCU only powers up while the ignition is on, so scan with the scooter switched on and parked.",
                 fontSize = 11.sp,
                 lineHeight = 17.sp,
                 color = colors.muted,
@@ -1061,6 +1061,10 @@ private fun DebugScreen(live: LiveState) {
                     filled = !live.connected,
                 ) {
                     if (live.connected) Graph.ble.disconnect() else Graph.ble.reconnectNow()
+                }
+                // Experiment: does the CCU drop the link without heartbeats? Watch the link log.
+                PillButton(label = "PAUSE HEARTBEAT 10S", enabled = live.connected) {
+                    Graph.ble.pauseHeartbeat(10_000L)
                 }
             }
 
