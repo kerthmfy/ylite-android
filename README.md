@@ -133,3 +133,8 @@ system sheet.
 Not affiliated with Yamaha. Nothing here claims to satisfy Yamaha's terms; it is a
 personal tool that talks to a device you own using the standard Bluetooth protocol
 the CCU already exposes.
+
+
+#AI disclosure
+
+roughly 70-80% of this project were AI assisted with my own supervision and carefully reviewing each of its output. If you're against AI-made tweaks/apps then this is not for you. These projects were just a personal projects of mine and just love to share it with y'all :)
