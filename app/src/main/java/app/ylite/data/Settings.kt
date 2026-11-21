@@ -5,7 +5,7 @@ import android.content.Context
 /**
  * The scooter itself, as opposed to the CCU that reports on it.
  *
- * The BLE name (`YSCCU_00000005221269`) identifies the connectivity unit, not the
+ * The BLE name (`YSCCU_<serial>`) identifies the connectivity unit, not the
  * model. Nothing in the GATT table carries a model code either — the only place a
  * model could come from is the advertisement (see ScanHit.advertised) or an NUS
  * frame, and neither is known yet. So the model is a setting you choose once,
