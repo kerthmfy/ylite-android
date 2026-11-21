@@ -4,68 +4,6 @@ An unofficial alternative for the official Y-Connect app. It records rides, logs
 on your own phone.
 
 
-## What it does today
-
-**Rides.** Start/stop a ride from the Ride tab. GPS fixes are recorded once a second,
-distance is accumulated, and the map follows you. The map gets a light location
-subscription while the tab is open even before a ride starts, so it is not blind while
-you are parked. Every ride is kept in History with duration, distance, max speed and
-the track drawn on OpenStreetMap tiles.
-
-**Scooter link.** Scan for the CCU, bond with it, and every notification it sends is
-recorded. A live dashboard shows trip, odometer, fuel, temperature, battery and elapsed
-time — blank (`—`) until the decoder knows where the bytes live, never a fake zero.
-Debug → **CAPTURE FRAMES** stores notifications without starting a ride, and
-**EXPORT CAPTURE** writes them to a CSV, which is how a parked capture is collected.
-
-**Appearance.** System, light or dark, chosen in Scooter → Settings.
-
-The CCU is remembered after the first connection, so Y-Lite reconnects by itself when
-the scooter is switched on — including after a relaunch. It retries indefinitely,
-backing off to one attempt every 30 s, because "no answer" is simply a parked scooter
-with the ignition off. Debug → **RECONNECT** starts over on demand, and the **LINK LOG**
-timestamps every attempt, drop and status code in plain words.
-
-**Fuel.** Log fill-ups with a station, full/partial tank, and any two of litres,
-price per litre and total (the third is computed, the same way Fuelio does it).
-Consumption is calculated across full tanks only, so a top-up does not invent a tank.
-
-The odometer can come from the dash, from the **trip meter** (added to the last reading
-for you), or from neither: Scooter → Settings → **Odometer optional** puts a NO READING
-switch on the form, so a receipt with litres and money is enough. Rows without a
-reading stay out of the km/L maths instead of quietly skewing it.
-
-**Maintenance.** Oil, CVT belt and rollers, air filter, spark plug and brake fluid to
-start with — but the list is yours: add a job, change how many kilometres it comes
-round, rename it, delete it. All of it is measured from your odometer, with overdue
-warnings and a DONE button that logs the service at the current reading. Tap a job to
-see its whole history — every service with its date and odometer — and to remove a
-wrongly logged one.
-
-**Where you parked.** The last fix of your last ride, with a button into your maps app.
-
-**Import and export.** Fuelio's backup CSV imports directly, and the station in its
-"City" column becomes a station here: names you have not used before are created and
-starred as favourites, so past stations and their visit counts appear without retyping.
-Trailing separators are cleaned off (`Petron -` becomes `Petron`), and any station can be
-renamed from the picker — renaming to a name that already exists merges the two and adds
-their visits together.
-Everything exports as one zip: GPX per ride, raw CCU frames per ride, and CSV logs for
-rides, fill-ups, services and stations.
-
-## What it sends to the scooter
-
-Y-Lite sends only the handshake and heartbeat frames seen from the official app:
-
-- the two 60-byte handshake frames, once per connection, right after subscribing to
-  Nordic UART `6e400003` and raising the MTU. The CCU hangs up ~2 s after connect without them.
-- heartbeat A and B once per second while connected (they carry the phone's clock).
-
-Nothing else is ever written, and no other opcodes are probed. The handshake frames contain
-the CCU serial and a per-pairing token, so they are not in this repo: paste them under
-**Scooter › CCU handshake** from your own capture of the official app. They are stored only in
-the app's settings on the phone.
-
 ## Build
 
 Requirements: JDK 17 or newer, Android SDK platform 35. Gradle comes from the wrapper.
@@ -81,26 +19,9 @@ Room 2.6.1 (the last release that works with Kotlin 2.0.x under KSP1), osmdroid 
 
 ## Install
 
-Grab `ylite-debug.apk` from the latest release, or:
+Grab `ylite-debug.apk` from the latest release
 
-```bash
-adb install -r ylite-debug.apk
-```
 
-Releases are debug-signed, so they upgrade in place over each other but not over a
-release-signed build.
-
-## First run
-
-1. Grant location, Bluetooth and notification permissions.
-2. Scooter tab → **CHANGE MODEL** → pick your scooter.
-3. Scooter switched on and parked → **MANAGE** → **SCAN** → tap the `YSCCU_…` entry.
-   Android will bond with it; the PIN is usually `000000`. If a pairing attempt went
-   wrong, forget the device in Bluetooth settings first.
-4. Ride tab → **START RIDE**.
-
-The CCU only powers up with the ignition on, and only one client can hold the link, so
-keep the official app closed while Y-Lite is connected.
 
 ## Data
 
