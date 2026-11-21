@@ -122,7 +122,8 @@ system sheet.
   status with a short explanation.
 - **No bulk offline map download.** OpenStreetMap's tile policy forbids it and osmdroid
   enforces that, so the map relies on its normal cache of tiles you have already seen.
-- **No write support** to the CCU. That is a design decision, not a missing feature.
+- **Writes are limited to the handshake and heartbeat.** No other opcodes are sent or
+  probed. See *What it sends to the scooter* above.
 - **No ride auto-start.** Start and stop are manual; a killed process leaves a ride
   with no end time, which History shows as `NO END`.
 - **Detecting scooter model might be impossible as of the moment** No workaround as of the moment as this is something the YamahaMotorOn app has and it is closed source.
